@@ -1,0 +1,70 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="Drive">
+  <meta name="theme-color" content="#0b0d10">
+  <meta name="robots" content="noindex">
+  <title>Drive</title>
+  <link rel="manifest" href="./manifest.webmanifest">
+  <link rel="apple-touch-icon" href="./icon-180.png">
+  <link rel="icon" href="./icon-180.png">
+  <link rel="stylesheet" href="./vendor/maplibre-gl.css">
+  <link rel="stylesheet" href="./styles.css">
+</head>
+<body>
+  <div id="map"></div>
+
+  <div id="searchbar" class="searchbar">
+    <input id="q" type="search" placeholder="Where to?" autocomplete="off" autocorrect="off" enterkeyhint="search">
+    <div id="results" class="results" hidden></div>
+  </div>
+
+  <div id="nav" class="navbar" hidden>
+    <div id="nav-next" class="nav-next">Starting…</div>
+    <div class="nav-row"><span id="nav-eta"></span><button id="stop" type="button">End</button></div>
+  </div>
+
+  <div id="cam" class="cam" hidden></div>
+  <div id="toast" class="toast" role="status" hidden></div>
+
+  <div class="side">
+    <button id="recenter" type="button" hidden>Recenter</button>
+    <button id="night" type="button">Day</button>
+    <button id="log" type="button">Drives</button>
+  </div>
+
+  <div class="speedo"><span id="speed">0</span><small>km/h</small></div>
+
+  <div id="plan" class="sheet" hidden>
+    <div id="plan-name" class="sheet-title"></div>
+    <div id="plan-info" class="sheet-info"></div>
+    <div class="sheet-actions"><button id="cancel" type="button" class="ghost">Cancel</button><button id="go" type="button" class="primary">Go</button></div>
+  </div>
+
+  <div id="drives" class="modal" hidden>
+    <div class="card">
+      <div class="sheet-title">Drives: predicted vs real</div>
+      <div id="drives-list" class="drives-list"></div>
+      <div class="sheet-actions"><button id="drives-export" type="button" class="ghost">Export</button><button id="drives-close" type="button" class="primary">Close</button></div>
+    </div>
+  </div>
+
+  <button id="start" type="button" class="start">Start<small>turns on voice, GPS and keeps the screen awake</small></button>
+
+  <div id="setup" class="modal" hidden>
+    <div class="card">
+      <div class="sheet-title">Paste TomTom key</div>
+      <input id="key-input" type="text" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="key">
+      <div class="sheet-actions"><button id="save-key" type="button" class="primary">Save</button></div>
+    </div>
+  </div>
+
+  <script src="./vendor/maplibre-gl.js"></script>
+  <script type="module" src="./app.js"></script>
+</body>
+</html>
