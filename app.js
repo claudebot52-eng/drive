@@ -12,10 +12,13 @@ const SIM_KMH = Number(params.get("kmh")) || 110;
 const SIM_START = { lat: 24.3665244, lon: 54.5647253 };
 
 // ---------- key ----------
-// A setup link carries the key after "#key=": the fragment never leaves the phone. Store it, then clean the address bar.
+// A setup link carries the key after "#key=": the fragment never leaves the phone.
+// iPhone gives a home-screen app its own empty storage, separate from Safari, so the key must travel inside the saved
+// link. In Safari the "#key=" part therefore stays in the address bar until Add to Home Screen has captured it.
+const STANDALONE = navigator.standalone === true || matchMedia("(display-mode: standalone)").matches;
 if (location.hash.startsWith("#key=")) {
   store.set("navlab.key", decodeURIComponent(location.hash.slice(5)));
-  history.replaceState(null, "", location.pathname + location.search);
+  if (STANDALONE) history.replaceState(null, "", location.pathname + location.search);
 }
 let KEY = store.get("navlab.key", "");
 
@@ -315,7 +318,9 @@ function boot() {
   $("night").textContent = state.night ? "Day" : "Night";
 }
 
-$("save-key").onclick = () => { const v = $("key-input").value.trim(); if (v) { KEY = v; store.set("navlab.key", v); boot(); } };
+// accepts the bare key or the whole setup link
+$("save-key").onclick = () => { const raw = $("key-input").value.trim(); const v = raw.includes("#key=") ? raw.split("#key=")[1] : raw; if (v) { KEY = v; store.set("navlab.key", v); boot(); } };
+if (!STANDALONE && !SIM) $("start-hint").textContent = "Safari: first Share → Add to Home Screen, then open Drive from the home screen";
 $("start").onclick = () => { $("start").remove(); say("Ready."); keepAwake(); startTracking(); };
 $("recenter").onclick = () => { state.follow = true; $("recenter").hidden = true; if (state.pos) map.easeTo({ center: [state.pos.lon, state.pos.lat], zoom: 15.5 }); };
 $("night").onclick = () => setNight(!state.night);

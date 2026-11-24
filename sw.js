@@ -1,6 +1,6 @@
 // App shell cache so the screen opens without signal. Map tiles and TomTom calls always go to the network.
 const CACHE_VERSION = "v202611241218";
-const SHELL = ["./", "./index.html", "./styles.css", "./app.js", "./geo.js", "./cameras.json", "./manifest.webmanifest", "./vendor/maplibre-gl.js", "./vendor/maplibre-gl.css", "./icon-180.png"];
+const SHELL = ["./", "./index.html", "./styles.css", "./app.js", "./geo.js", "./cameras.json", "./vendor/maplibre-gl.js", "./vendor/maplibre-gl.css", "./icon-180.png"];
 self.addEventListener("install", (e) => { e.waitUntil(caches.open(CACHE_VERSION).then((c) => c.addAll(SHELL))); self.skipWaiting(); });
 self.addEventListener("activate", (e) => { e.waitUntil(caches.keys().then((ks) => Promise.all(ks.filter((k) => k !== CACHE_VERSION).map((k) => caches.delete(k)))).then(() => self.clients.claim())); });
 self.addEventListener("fetch", (e) => {
