@@ -21,12 +21,14 @@
   <div id="searchbar" class="searchbar">
     <input id="q" type="search" placeholder="Where to?" autocomplete="off" autocorrect="off" enterkeyhint="search">
     <div class="quick"><button id="home" type="button">Home</button><button id="work" type="button">Work</button></div>
+    <button id="usual" type="button" class="usual" hidden></button>
+    <div id="leave" class="leave" hidden><span id="leave-text"></span><span class="leave-btns"><button id="leave-go" type="button">Route</button><button id="leave-x" type="button" aria-label="Cancel reminder">✕</button></span></div>
     <div id="results" class="results" hidden></div>
     <div id="gps" class="gps" role="status" hidden></div>
   </div>
 
   <div id="nav" class="navbar" hidden>
-    <div id="nav-next" class="nav-next">Starting…</div>
+    <div class="nav-main"><div id="nav-arrow" class="nav-arrow">↑</div><div class="nav-text"><div id="nav-next" class="nav-next">Starting…</div><div id="nav-then" class="nav-then" hidden></div></div></div>
     <div id="lanes" class="lanes" hidden></div>
     <div class="nav-row"><span id="nav-eta"></span><span class="nav-btns"><button id="add-stop" type="button">+ Stop</button><button id="stop" type="button">End</button></span></div>
   </div>
@@ -49,11 +51,14 @@
     <div id="plan-options" class="options" hidden></div>
     <div class="sheet-actions"><button id="cancel" type="button" class="ghost">Cancel</button><button id="go" type="button" class="primary">Go</button></div>
     <div class="sheet-links"><button id="set-home" type="button">Set as Home</button><button id="set-work" type="button">Set as Work</button></div>
+    <div class="leave-row"><label for="arrive-by">Arrive by</label><input id="arrive-by" type="time"><span id="leave-info"></span></div>
+    <div id="leave-actions" class="sheet-links" hidden><button id="leave-remind" type="button">Remind me here</button><button id="leave-calendar" type="button">Add to Calendar</button></div>
   </div>
 
   <div id="drives" class="modal" hidden>
     <div class="card">
       <div class="sheet-title">Drives: predicted vs real</div>
+      <div id="drives-stats" class="stats"></div>
       <div id="drives-list" class="drives-list"></div>
       <div class="sheet-actions"><button id="drives-export" type="button" class="ghost">Export</button><button id="drives-close" type="button" class="primary">Close</button></div>
     </div>
@@ -69,6 +74,7 @@
       <button id="avoid-motorways" type="button">Avoid motorways</button>
       <button id="log" type="button">Drives: predicted vs real</button>
       <button id="reset-quick" type="button">Clear Home and Work</button>
+      <button id="restore-cams" type="button">Restore hidden cameras</button>
       <div class="sheet-actions"><button id="menu-close" type="button" class="primary">Close</button></div>
     </div>
   </div>

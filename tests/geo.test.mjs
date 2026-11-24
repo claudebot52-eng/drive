@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { distance, bearing, angleDiff, cameraAhead, CameraAlerts, cumulative, locateOnRoute, nextInstruction, fmtDist, sayDist, driveRecord, pointAt, lerpAngle, laneView, limitAt, parseLimit, OverSpeed, darbPeak, tollNote, clock, thin, incidentsOnRoute } from "../geo.js";
+import { distance, bearing, angleDiff, cameraAhead, CameraAlerts, cumulative, locateOnRoute, nextInstruction, fmtDist, sayDist, driveRecord, pointAt, lerpAngle, laneView, limitAt, parseLimit, OverSpeed, darbPeak, tollNote, clock, thin, incidentsOnRoute, turnIcon, thenTurn, tripStats, personalFactor, usualTrip, icsEvent } from "../geo.js";
 
 const P = { lat: 24.4, lon: 54.5 };
 const north = (m) => ({ lat: P.lat + m / 111195, lon: P.lon });
@@ -167,4 +167,63 @@ test("incidentsOnRoute: on the line, ahead only, no plain queues", () => {
   ], pts, cum, 500);
   assert.deepEqual(got.map((x) => x.text), ["Road works", "Accident"]);
   assert.ok(Math.abs(got[0].along - 1500) < 5);
+});
+
+test("turn symbols and then-turn", () => {
+  assert.equal(turnIcon("TURN_LEFT"), "←");
+  assert.equal(turnIcon("ROUNDABOUT_CROSS"), "⟳");
+  assert.equal(turnIcon("TAKE_EXIT"), "↗");
+  assert.equal(turnIcon("SOMETHING_NEW"), "↑");
+  const ins = [{ offset: 100, message: "Turn right" }, { offset: 260, message: "Turn left" }, { offset: 2000, message: "Arrive" }];
+  assert.equal(thenTurn(ins, ins[0]).message, "Turn left");   // 160 m apart
+  assert.equal(thenTurn(ins, ins[1]), null);                   // next one is far
+  assert.equal(thenTurn(ins, ins[2]), null);                   // nothing after
+  const follow = [{ offset: 100, message: "Take the motorway" }, { offset: 150, message: "Follow E11", maneuver: "FOLLOW" }];
+  assert.equal(thenTurn(follow, follow[0]), null);            // "then follow the road" is noise
+});
+
+const D = (o) => ({ start: "2026-11-23T08:00:00", to: "Uni", predicted_s: 1200, no_traffic_s: 1000, actual_s: 1320, metres: 24000, reroutes: 0, to_lat: 24.3655, to_lon: 54.5633, ...o });
+
+test("tripStats: week totals, average error, traffic time; test drives and partial drives handled", () => {
+  const now = new Date("2026-11-24T20:00:00");
+  const s = tripStats([
+    D({}), D({ start: "2026-11-24T08:00:00", actual_s: 1200 }),
+    D({ start: "2026-10-01T08:00:00", actual_s: 1440 }),            // old: counts for error, not for the week
+    D({ simulated: true, actual_s: 60 }),                           // ignored everywhere
+    D({ start: "2026-11-24T17:00:00", ended_early: true, left_m: 4000, actual_s: 900 }), // in the week, not in the error
+  ], now);
+  assert.equal(s.drives, 4); assert.equal(s.weekDrives, 3);
+  assert.equal(s.weekKm, 24 + 24 + 20); assert.equal(s.weekMin, 22 + 20 + 15);
+  assert.equal(s.compared, 3); assert.equal(s.errorPct, 10);       // (+10% + 0% + 20%) / 3
+  assert.equal(s.trafficMin, Math.round((320 + 200 + 440) / 60));
+  assert.equal(tripStats([], now).errorPct, null);
+});
+
+test("personalFactor: own destination first, then all drives, else no correction", () => {
+  assert.equal(personalFactor([], "Uni"), 1);
+  assert.equal(personalFactor([D({})], "Uni"), 1);                                  // one drive is not a pattern
+  assert.equal(personalFactor([D({}), D({ actual_s: 1440 })], "Uni"), 1.15);        // median of 1.10 and 1.20
+  assert.equal(personalFactor([D({}), D({}), D({})], "Mall"), 1.1);                 // falls back to all drives
+  assert.equal(personalFactor([D({ actual_s: 9999 }), D({ actual_s: 9999 })], "Uni"), 1.6); // capped
+  assert.equal(personalFactor([D({ stops: 1 }), D({ stops: 1 })], "Uni"), 1);       // drives with a stop do not count
+});
+
+test("usualTrip: same kind of day and time, twice or more, not where the car already is", () => {
+  const drives = [D({}), D({ start: "2026-11-20T08:20:00" }), D({ start: "2026-11-19T18:00:00", to: "Home", to_lat: 24.33, to_lon: 54.70 })];
+  const tue8 = new Date("2026-11-24T08:10:00"), far = { lat: 24.33, lon: 54.70 };
+  assert.equal(usualTrip(drives, tue8, far).name, "Uni");
+  assert.equal(usualTrip(drives, tue8, far).times, 2);
+  assert.equal(usualTrip(drives, new Date("2026-11-24T13:00:00"), far), null);           // wrong time of day
+  assert.equal(usualTrip(drives, new Date("2026-11-28T08:10:00"), far), null);           // Saturday
+  assert.equal(usualTrip(drives, tue8, { lat: 24.3655, lon: 54.5633 }), null);           // already there
+  assert.equal(usualTrip([D({})], tue8, far), null);                                     // once is not usual
+  assert.equal(usualTrip([D({ to_lat: undefined }), D({ to_lat: undefined })], tue8, far), null); // old records without a position
+});
+
+test("icsEvent builds a calendar entry with alerts", () => {
+  const ics = icsEvent({ title: "Leave for Uni", start: new Date("2026-11-25T03:53:00Z") });
+  assert.ok(ics.startsWith("BEGIN:VCALENDAR") && ics.endsWith("END:VCALENDAR"));
+  assert.ok(ics.includes("DTSTART:20261125T035300Z") && ics.includes("DTEND:20261125T035800Z"));
+  assert.ok(ics.includes("SUMMARY:Leave for Uni") && ics.includes("TRIGGER:-PT10M") && ics.includes("TRIGGER:PT0M"));
+  assert.ok(ics.includes("\r\n"));
 });

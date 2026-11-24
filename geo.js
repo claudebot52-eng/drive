@@ -246,3 +246,87 @@ export function incidentsOnRoute(incidents, pts, cum, fromAlong, maxOff = 50) {
   }
   return out.sort((a, b) => a.along - b.along);
 }
+
+const TURN_ICONS = {
+  TURN_LEFT: "←", TURN_RIGHT: "→", SHARP_LEFT: "↙", SHARP_RIGHT: "↘", BEAR_LEFT: "↖", BEAR_RIGHT: "↗", KEEP_LEFT: "↖", KEEP_RIGHT: "↗",
+  STRAIGHT: "↑", FOLLOW: "↑", ENTER_MOTORWAY: "↑", ENTER_FREEWAY: "↑", ENTER_HIGHWAY: "↑", DEPART: "↑", SWITCH_MAIN_ROAD: "↑", SWITCH_PARALLEL_ROAD: "↗",
+  TAKE_EXIT: "↗", MOTORWAY_EXIT_RIGHT: "↗", MOTORWAY_EXIT_LEFT: "↖", MAKE_UTURN: "↶", TRY_MAKE_UTURN: "↶", ENTRANCE_RAMP: "↗",
+  ROUNDABOUT_CROSS: "⟳", ROUNDABOUT_RIGHT: "⟳", ROUNDABOUT_LEFT: "⟳", ROUNDABOUT_BACK: "⟳",
+  ARRIVE: "⚑", ARRIVE_LEFT: "⚑", ARRIVE_RIGHT: "⚑", WAYPOINT_REACHED: "⚑", WAYPOINT_LEFT: "⚑", WAYPOINT_RIGHT: "⚑",
+};
+/** One big symbol for a TomTom manoeuvre code. Unknown codes fall back to straight ahead. */
+export const turnIcon = (maneuver) => TURN_ICONS[maneuver] || "↑";
+
+/** The instruction right after `next`, if it follows within `within` metres (two turns in quick succession). */
+export function thenTurn(instructions, next, within = 250) {
+  const i = instructions.findIndex((x) => x.offset === next.offset && x.message === next.message);
+  const after = i >= 0 ? instructions[i + 1] : null;
+  // "then follow the road" is not a turn worth announcing
+  if (!after || ["FOLLOW", "DEPART", "STRAIGHT"].includes(after.maneuver)) return null;
+  return after.offset - next.offset <= within ? after : null;
+}
+
+const median = (xs) => { const s = [...xs].sort((a, b) => a - b); const m = s.length >> 1; return s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2; };
+// drives that can be compared with TomTom's prediction: real, finished, no stop on the way
+const comparable = (d) => !d.simulated && !d.ended_early && !d.stops && d.predicted_s > 0;
+
+/** Numbers for the Drives screen. `now` is a Date. */
+export function tripStats(drives, now) {
+  const real = drives.filter((d) => !d.simulated);
+  const week = real.filter((d) => now - new Date(d.start) < 7 * 86400000);
+  const cmp = real.filter(comparable);
+  const drivenM = (d) => d.metres - (d.left_m || 0);
+  return {
+    drives: real.length,
+    weekDrives: week.length,
+    weekKm: Math.round(week.reduce((s, d) => s + drivenM(d), 0) / 1000),
+    weekMin: Math.round(week.reduce((s, d) => s + d.actual_s, 0) / 60),
+    // how far off TomTom is on average: +8 means drives take 8% longer than predicted
+    errorPct: cmp.length ? Math.round((cmp.reduce((s, d) => s + (d.actual_s - d.predicted_s) / d.predicted_s, 0) / cmp.length) * 100) : null,
+    compared: cmp.length,
+    trafficMin: Math.round(cmp.filter((d) => d.no_traffic_s).reduce((s, d) => s + Math.max(0, d.actual_s - d.no_traffic_s), 0) / 60),
+  };
+}
+
+/**
+ * How the driver's real times compare with TomTom's for one destination: 1.08 = 8% longer.
+ * Needs 2 comparable drives there, else 3 anywhere, else 1 (no correction). Kept within 0.7-1.6.
+ */
+export function personalFactor(drives, name) {
+  const cmp = drives.filter(comparable);
+  const here = cmp.filter((d) => d.to === name);
+  const pool = here.length >= 2 ? here : cmp.length >= 3 ? cmp : [];
+  if (!pool.length) return 1;
+  return Math.min(1.6, Math.max(0.7, median(pool.map((d) => d.actual_s / d.predicted_s))));
+}
+
+/**
+ * The trip the driver usually makes around this time: same kind of day (Mon-Fri or weekend), start within 90 minutes of now,
+ * made at least twice, and not where the car already is. Returns { name, lat, lon, times } or null.
+ */
+export function usualTrip(drives, now, pos) {
+  const workday = (d) => d.getDay() >= 1 && d.getDay() <= 5;
+  const minutes = (d) => d.getHours() * 60 + d.getMinutes();
+  const hits = new Map();
+  for (const d of drives) {
+    if (d.simulated || d.to_lat == null) continue;
+    const s = new Date(d.start);
+    const gap = Math.abs(minutes(s) - minutes(now));
+    if (workday(s) !== workday(now) || Math.min(gap, 1440 - gap) > 90) continue;
+    const h = hits.get(d.to) || { name: d.to, lat: d.to_lat, lon: d.to_lon, times: 0 };
+    h.times++;
+    hits.set(d.to, h);
+  }
+  const best = [...hits.values()].filter((h) => h.times >= 2 && (!pos || distance(pos, h) > 1500)).sort((a, b) => b.times - a.times)[0];
+  return best || null;
+}
+
+/** A one-event calendar file with an alert at the start, for "leave now" reminders that work with the app closed. */
+export function icsEvent({ title, start, minutes = 5, alertBefore = 10 }) {
+  const stamp = (d) => d.toISOString().replace(/[-:]/g, "").replace(/\.\d{3}/, "");
+  const end = new Date(start.getTime() + minutes * 60000);
+  return ["BEGIN:VCALENDAR", "VERSION:2.0", "PRODID:-//navlab//drive//EN", "BEGIN:VEVENT", `UID:${stamp(start)}-${Math.round(start / 1000)}@navlab`,
+    `DTSTAMP:${stamp(start)}`, `DTSTART:${stamp(start)}`, `DTEND:${stamp(end)}`, `SUMMARY:${title.replace(/[,;\\]/g, " ")}`,
+    "BEGIN:VALARM", "ACTION:DISPLAY", `DESCRIPTION:${title.replace(/[,;\\]/g, " ")}`, `TRIGGER:-PT${alertBefore}M`, "END:VALARM",
+    "BEGIN:VALARM", "ACTION:DISPLAY", `DESCRIPTION:${title.replace(/[,;\\]/g, " ")}`, "TRIGGER:PT0M", "END:VALARM", "END:VEVENT", "END:VCALENDAR"].join("\r\n");
+}

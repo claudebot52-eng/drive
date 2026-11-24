@@ -1,5 +1,5 @@
 // navlab drive screen: map, speed, camera warnings, TomTom route + turn voice, drive log.
-import { distance, bearing, cameraAhead, CameraAlerts, cumulative, locateOnRoute, nextInstruction, fmtDist, sayDist, driveRecord, pointAt, lerpAngle, laneView, limitAt, parseLimit, OverSpeed, tollNote, clock, thin, incidentsOnRoute } from "./geo.js";
+import { distance, bearing, cameraAhead, CameraAlerts, cumulative, locateOnRoute, nextInstruction, fmtDist, sayDist, driveRecord, pointAt, lerpAngle, laneView, limitAt, parseLimit, OverSpeed, tollNote, clock, thin, incidentsOnRoute, turnIcon, thenTurn, tripStats, personalFactor, usualTrip, icsEvent } from "./geo.js";
 
 import { sunsetStyle } from "./colors.js";
 
@@ -137,9 +137,17 @@ async function initMap() {
   for (const ev of ["touchend", "touchcancel", "dragstart", "zoomstart"]) map.on(ev, cancelPress);
   map.on("contextmenu", (e) => pin(e.lngLat));
   map.on("style.load", addOverlays);
+  // Tap a camera dot to remove a camera that is not really there.
+  map.on("click", "cams", (e) => {
+    const [lon, lat] = e.features[0].geometry.coordinates;
+    const cam = state.cameras.find((c) => Math.abs(c.lat - lat) < 1e-6 && Math.abs(c.lon - lon) < 1e-6);
+    if (cam && confirm("Hide this camera? Use this when no camera is really there. Undo in Menu.")) hideCamera(cam);
+  });
   map.once("load", async () => {
     const data = await (await fetch("./cameras.json")).json();
-    state.cameras = data.cameras.map((c) => ({ lat: c.lat, lon: c.lon, limit: Number.parseInt(c.maxspeed, 10) || null, light: c.kind === "light" }));
+    const hidden = new Set(store.get("navlab.hiddencams", [])); // cameras the driver marked as not there
+    state.cameras = data.cameras.map((c) => ({ lat: c.lat, lon: c.lon, limit: c.kind === "light" ? null : Number.parseInt(c.maxspeed, 10) || null, light: c.kind === "light" }))
+      .filter((c) => !hidden.has(state.alerts.key(c)));
     // cameras the driver added by hand live on the phone and join the same list
     state.cameras.push(...store.get("navlab.mycams", []).map((c) => ({ lat: c.lat, lon: c.lon, limit: null, mine: true })));
     map.getSource("cams")?.setData(camGeo());
@@ -148,6 +156,18 @@ async function initMap() {
   const el = document.createElement("div");
   el.className = "me";
   meMarker = new maplibregl.Marker({ element: el, rotationAlignment: "map" }); // added to the map on the first fix
+}
+
+// Removes a camera from this phone's list (the driver saw that none is there). Kept in a list so it can be undone and exported.
+function hideCamera(cam) {
+  const key = state.alerts.key(cam);
+  if (cam.mine) store.set("navlab.mycams", store.get("navlab.mycams", []).filter((c) => state.alerts.key(c) !== key));
+  else store.set("navlab.hiddencams", [...new Set([...store.get("navlab.hiddencams", []), key])]);
+  state.cameras = state.cameras.filter((c) => c !== cam);
+  if (state.route) state.route.camList = state.route.camList.filter((c) => c !== cam);
+  map.getSource("cams")?.setData(camGeo());
+  $("cam").hidden = true;
+  say("Camera hidden.");
 }
 
 function setTheme(id) {
@@ -223,7 +243,7 @@ function onFix(lat, lon, speedMs, hdg, t = Date.now()) {
     const loc = locateOnRoute(pos, state.route.pts, state.route.cum);
     if (loc.off < 30) { const q = pointAt(state.route.pts, state.route.cum, loc.along); show = { lat: q.lat, lon: q.lon, hdg: q.bearing }; }
   }
-  if (!prev) { meMarker.setLngLat([lon, lat]).addTo(map); gps("ok"); map.jumpTo({ center: [lon, lat], zoom: 15 }); }
+  if (!prev) { meMarker.setLngLat([lon, lat]).addTo(map); gps("ok"); map.jumpTo({ center: [lon, lat], zoom: 15 }); suggestUsual(); tickLeave(); }
   glideTo(show);
   $("speed").textContent = Math.round(state.kmh);
   // Road speed limit, always on screen. On a route it comes with the route; where the route has none, and when
@@ -274,8 +294,11 @@ function checkCameras(now) {
   const pool = state.drive ? state.route.camList : state.cameras;
   const hit = state.kmh >= 15 && state.heading != null ? cameraAhead(state.pos, state.heading, pool) : null;
   const overRoad = state.roadLimit != null && state.kmh > state.roadLimit;
+  state.camHit = hit ? hit.camera : null; // the camera the pill is about; tapping the pill hides it
   if (!hit) { chip.hidden = true; document.body.classList.toggle("over", overRoad); return; }
-  const limit = hit.camera.limit ?? state.roadLimit; // a camera without its own limit takes the road's
+  // The road's limit (TomTom's map, fresh) wins over the number stored with the camera, which comes from
+  // driver-reported lists and was seen wrong on a real street. The camera's own number is the fallback.
+  const limit = state.roadLimit ?? hit.camera.limit;
   const over = (limit != null && state.kmh > limit) || overRoad;
   chip.hidden = false;
   const what = hit.camera.light ? "Red light camera" : "Camera";
@@ -446,6 +469,10 @@ async function plan(dest) {
     state.options = await fetchRoutes(state.pos, dest, { alternatives: 2 });
   } catch (e) { say(`Route failed. ${e.message}`); return; }
   $("plan-name").textContent = dest.name + (dest.parking ? " · your parking spot" : "");
+  $("arrive-by").value = "";
+  $("leave-info").textContent = "";
+  $("leave-actions").hidden = true;
+  $("usual").hidden = true;
   choose(0);
   $("plan").hidden = false;
   state.follow = false;
@@ -486,17 +513,23 @@ function go() {
   $("searchbar").hidden = true;
   state.follow = true;
   $("recenter").hidden = true;
-  map.setPadding({ top: 320, bottom: 0, left: 0, right: 0 });
+  map.setPadding(navPadding());
   map.setZoom(Math.max(map.getZoom(), 15.5));
   say(`Route to ${state.route.dest.name}. ${Math.round(s.secs / 60)} minutes, arriving ${arriveAt(s.secs)}.`);
   loadIncidents(state.route, 0);
 }
+
+// While driving the car sits clear of the instruction bar: lower on the screen upright, to the right when the phone is sideways.
+const navPadding = () => (innerWidth > innerHeight ? { top: 0, bottom: 0, left: Math.round(innerWidth * 0.44), right: 0 } : { top: 320, bottom: 0, left: 0, right: 0 });
+addEventListener("resize", () => { if (map && state.drive) map.setPadding(navPadding()); });
 
 // Called on arrival and by the End button. Both save the drive; only a mis-tap (under a minute or 500 m) is dropped.
 function endDrive(arrived) {
   const d = state.drive;
   const rec = d && driveRecord({ ...d, now: Date.now(), arrived });
   if (rec) {
+    rec.to_lat = state.route.dest.lat;
+    rec.to_lon = state.route.dest.lon;
     if (SIM) rec.simulated = true;
     if (d.switches) rec.switched_route = d.switches;
     if (d.stops) rec.stops = d.stops; // a stop makes "predicted vs took" meaningless; kept so it can be filtered out
@@ -606,17 +639,99 @@ async function guide(now) {
   const next = nextInstruction(route.instructions, loc.along);
   const etaMin = Math.max(1, Math.round(drive.remainingS / 60));
   $("nav-eta").textContent = `${arriveAt(drive.remainingS)} · ${etaMin} min · ${fmtDist(left)}`;
-  if (!next) { $("nav-next").textContent = "Continue to destination"; return; }
+  if (!next) { $("nav-arrow").textContent = "↑"; $("nav-next").textContent = "Continue to destination"; $("nav-then").hidden = true; return; }
+  $("nav-arrow").textContent = turnIcon(next.maneuver);
   $("nav-next").textContent = `${fmtDist(next.toGo)} · ${next.message}`;
+  // two turns close together: show and say the second one too, so it does not come as a surprise
+  const then = thenTurn(route.instructions, next);
+  $("nav-then").hidden = !then;
+  if (then) $("nav-then").textContent = `then ${turnIcon(then.maneuver)} ${then.message}`;
   const id = next.offset;
   if (next.toGo <= 70 && !drive.spoken.has(`${id}:now`)) {
     drive.spoken.add(`${id}:now`).add(`${id}:soon`);
-    say(next.message);
+    say(then ? `${next.message}, then ${then.message.charAt(0).toLowerCase()}${then.message.slice(1)}` : next.message);
   } else if (next.toGo <= 450 && next.toGo > 120 && !drive.spoken.has(`${id}:soon`)) {
     drive.spoken.add(`${id}:soon`);
     say(`In ${sayDist(next.toGo)}, ${next.message.charAt(0).toLowerCase()}${next.message.slice(1)}`);
   }
 }
+
+// ---------- arrive by / leave by ----------
+// "Be there by 08:15": TomTom plans backwards using typical traffic for that hour, then the driver's own record
+// against TomTom on this destination stretches or shrinks the drive time. Two extra minutes are added to get going.
+async function planLeave() {
+  const v = $("arrive-by").value;
+  const dest = state.route?.dest;
+  if (!v || !dest) return;
+  const [h, m] = v.split(":").map(Number);
+  const arrive = new Date();
+  arrive.setHours(h, m, 0, 0);
+  if (arrive - Date.now() < 10 * 60000) arrive.setDate(arrive.getDate() + 1); // that time has passed today: tomorrow
+  try {
+    const j = await tt(`/routing/1/calculateRoute/${state.pos.lat},${state.pos.lon}:${dest.lat},${dest.lon}/json`,
+      [["traffic", "true"], ["travelMode", "car"], ["arriveAt", arrive.toISOString().replace(/\.\d{3}Z$/, "Z")],
+        ...(settings.avoidTolls ? [["avoid", "tollRoads"]] : []), ...(settings.avoidMotorways ? [["avoid", "motorways"]] : [])]);
+    const base = j.routes[0].summary.travelTimeInSeconds;
+    const factor = personalFactor(store.get("navlab.drives", []), dest.name);
+    const secs = Math.round(base * factor) + 120;
+    const leave = new Date(arrive.getTime() - secs * 1000);
+    state.leavePlan = { name: dest.name, lat: dest.lat, lon: dest.lon, leaveAt: leave.getTime(), arriveAt: arrive.getTime() };
+    const day = leave.toDateString() === new Date().toDateString() ? "" : " tomorrow";
+    const own = factor === 1 ? "" : ` · your drives run ${Math.abs(Math.round((factor - 1) * 100))}% ${factor > 1 ? "longer" : "shorter"}`;
+    $("leave-info").textContent = `Leave by ${clock(leave)}${day} · ${Math.round(secs / 60)} min${own}`;
+    $("leave-actions").hidden = false;
+  } catch (e) { $("leave-info").textContent = `Could not plan that. ${e.message}`; $("leave-actions").hidden = true; }
+}
+
+// Reminder inside the app: a line on screen counting down, spoken 10 minutes before and at the moment. Works only
+// while Drive is open; the calendar button is for when it is closed.
+function remindLeave() {
+  store.set("navlab.leave", { ...state.leavePlan, said: [] });
+  $("plan").hidden = true;
+  endDrive(false);
+  tickLeave();
+  say(`Reminder set. Leave for ${state.leavePlan.name} at ${clock(new Date(state.leavePlan.leaveAt))}.`);
+}
+function tickLeave() {
+  const L = store.get("navlab.leave", null);
+  const el = $("leave");
+  if (!L || Date.now() - L.leaveAt > 20 * 60000 || state.drive) { el.hidden = true; if (L && (Date.now() - L.leaveAt > 20 * 60000)) localStorage.removeItem("navlab.leave"); return; }
+  const mins = Math.round((L.leaveAt - Date.now()) / 60000);
+  el.hidden = false;
+  $("leave-text").textContent = mins > 0 ? `Leave for ${L.name} in ${mins} min (${clock(new Date(L.leaveAt))})` : `Time to leave for ${L.name}`;
+  el.classList.toggle("now", mins <= 0);
+  const due = mins <= 0 ? "now" : mins <= 10 ? "soon" : null;
+  if (due && !L.said.includes(due)) {
+    L.said.push(due);
+    store.set("navlab.leave", L);
+    chime();
+    say(due === "now" ? `Time to leave for ${L.name}.` : `Leave for ${L.name} in ${mins} minutes.`);
+  }
+}
+setInterval(tickLeave, 20000);
+
+// A calendar entry with its own alerts, so the phone reminds even with Drive closed.
+function leaveToCalendar() {
+  const L = state.leavePlan;
+  const file = new File([icsEvent({ title: `Leave for ${L.name}`, start: new Date(L.leaveAt) })], "leave.ics", { type: "text/calendar" });
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(file);
+  a.download = "leave.ics";
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 60000);
+}
+
+// ---------- usual trip ----------
+// If the log shows the same destination at this time on this kind of day, offer it in one tap.
+function suggestUsual() {
+  if (state.drive || !state.pos) return;
+  const u = usualTrip(store.get("navlab.drives", []), new Date(), state.pos);
+  $("usual").hidden = !u;
+  if (!u) return;
+  $("usual").textContent = `Usual now: ${u.name} →`;
+  $("usual").onclick = () => { $("usual").hidden = true; plan({ name: u.name, lat: u.lat, lon: u.lon }); };
+}
+document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible") { suggestUsual(); tickLeave(); } });
 
 // ---------- stops on the way ----------
 const STOP_KINDS = [["Petrol", "petrol station"], ["Coffee", "coffee"], ["Food", "restaurant"], ["Shop", "supermarket"], ["Pharmacy", "pharmacy"], ["Mosque", "mosque"]];
@@ -676,6 +791,12 @@ async function setStop(stop) {
 // ---------- drives log ----------
 function showDrives() {
   const drives = store.get("navlab.drives", []);
+  const st = tripStats(drives, new Date());
+  $("drives-stats").textContent = st.drives
+    ? [`Last 7 days: ${st.weekDrives} drives · ${st.weekKm} km · ${st.weekMin} min`,
+      st.compared ? `TomTom vs you over ${st.compared} full drives: you take ${Math.abs(st.errorPct)}% ${st.errorPct >= 0 ? "longer" : "less"} · ${st.trafficMin} min lost to traffic` : "Finish a full drive to compare TomTom's times with yours",
+      `Your cameras: ${store.get("navlab.mycams", []).length} added · ${store.get("navlab.hiddencams", []).length} hidden`].join("\n")
+    : "";
   const list = $("drives-list");
   if (!drives.length) list.textContent = "No drives yet. Finish a route and it shows here.";
   else list.replaceChildren(...drives.slice().reverse().map((d) => {
@@ -766,6 +887,7 @@ function renderMenu() {
   $("beep").textContent = `Over-limit chime: ${settings.beep ? "on" : "off"}`;
   $("avoid-tolls").textContent = `Avoid tolls: ${settings.avoidTolls ? "on" : "off"}`;
   $("avoid-motorways").textContent = `Avoid motorways: ${settings.avoidMotorways ? "on" : "off"}`;
+  $("restore-cams").textContent = `Restore hidden cameras (${store.get("navlab.hiddencams", []).length})`;
   for (const [id, on] of [["beep", settings.beep], ["avoid-tolls", settings.avoidTolls], ["avoid-motorways", settings.avoidMotorways]]) $(id).classList.toggle("on", on);
 }
 function flip(key) {
@@ -785,6 +907,13 @@ $("work").onclick = () => quick("work");
 $("set-home").onclick = () => setQuick("home", state.route.dest);
 $("set-work").onclick = () => setQuick("work", state.route.dest);
 $("add-stop").onclick = openStops;
+$("cam").onclick = () => { if (state.camHit) hideCamera(state.camHit); };
+$("arrive-by").onchange = planLeave;
+$("leave-remind").onclick = remindLeave;
+$("leave-calendar").onclick = leaveToCalendar;
+$("leave-x").onclick = () => { localStorage.removeItem("navlab.leave"); $("leave").hidden = true; };
+$("leave-go").onclick = () => { const L = store.get("navlab.leave", null); if (L) plan({ name: L.name, lat: L.lat, lon: L.lon }); };
+$("restore-cams").onclick = () => { localStorage.removeItem("navlab.hiddencams"); say("Hidden cameras are back after you reopen Drive."); renderMenu(); };
 $("stops-close").onclick = () => ($("stops").hidden = true);
 $("stops-remove").onclick = () => setStop(null);
 renderQuick();
@@ -794,7 +923,7 @@ $("stop").onclick = () => endDrive(false);
 $("log").onclick = () => { $("menu").hidden = true; showDrives(); };
 $("drives-close").onclick = () => ($("drives").hidden = true);
 $("drives-export").onclick = async () => {
-  const text = JSON.stringify({ drives: store.get("navlab.drives", []), my_cameras: store.get("navlab.mycams", []), places: places() }, null, 1);
+  const text = JSON.stringify({ drives: store.get("navlab.drives", []), my_cameras: store.get("navlab.mycams", []), hidden_cameras: store.get("navlab.hiddencams", []), places: places() }, null, 1);
   try { if (navigator.share) await navigator.share({ title: "navlab drives", text }); else await navigator.clipboard.writeText(text); } catch { /* user closed the share sheet */ }
 };
 

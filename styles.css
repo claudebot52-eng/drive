@@ -101,3 +101,37 @@ body.over .speedo { background: var(--danger); }
 .kinds button { background: var(--line); min-height: 44px; }
 .results.in-card { background: none; margin-top: 8px; color: var(--dim); overflow: auto; }
 .results.in-card button { padding-left: 4px; }
+
+/* big turn symbol, and the turn after it */
+.nav-main { display: flex; gap: 12px; align-items: center; }
+.nav-arrow { flex: none; width: 64px; height: 64px; border-radius: 14px; background: rgba(0, 0, 0, 0.28); display: flex; align-items: center; justify-content: center; font-size: 44px; font-weight: 800; line-height: 1; }
+.nav-text { min-width: 0; }
+.nav-then { margin-top: 4px; font-size: 16px; opacity: 0.92; }
+/* usual trip, leave reminder, arrive-by */
+.usual { display: block; width: 100%; margin-top: 8px; text-align: left; font-weight: 700; border: 1px solid var(--accent); }
+.leave { margin-top: 8px; background: var(--panel); border-radius: 14px; padding: 10px 12px; display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.leave.now { background: var(--warn); color: #201200; font-weight: 700; }
+.leave-btns { display: flex; gap: 6px; flex: none; }
+.leave-btns button { min-height: 38px; padding: 6px 12px; background: var(--line); }
+.leave-row { display: flex; align-items: center; gap: 10px; margin-top: 12px; color: var(--dim); font-size: 15px; }
+.leave-row input { height: 40px; border-radius: 10px; border: 1px solid var(--ring); background: var(--field); color: var(--text); padding: 0 8px; font: inherit; }
+.leave-row span { color: var(--text); }
+.stats { white-space: pre-line; color: var(--dim); font-size: 14.5px; margin-top: 8px; padding-bottom: 8px; border-bottom: 1px solid var(--line); }
+.cam { cursor: pointer; }
+
+/* phone sideways: instructions in a left column, map and car on the right */
+@media (orientation: landscape) and (max-height: 520px) {
+  .navbar, .searchbar { right: auto; width: 42%; left: calc(env(safe-area-inset-left) + 10px); top: calc(env(safe-area-inset-top) + 8px); }
+  .nav-next { font-size: 20px; }
+  .nav-arrow { width: 52px; height: 52px; font-size: 36px; }
+  .lanes span { height: 42px; font-size: 26px; }
+  .speedo { width: 92px; height: 92px; left: calc(env(safe-area-inset-left) + 10px); bottom: calc(env(safe-area-inset-bottom) + 8px); }
+  .speedo span { font-size: 38px; }
+  .limit { left: calc(env(safe-area-inset-left) + 92px); bottom: calc(env(safe-area-inset-bottom) + 70px); width: 48px; height: 48px; font-size: 17px; border-width: 5px; }
+  .cam { left: calc(env(safe-area-inset-left) + 150px); bottom: calc(env(safe-area-inset-bottom) + 14px); font-size: 17px; padding: 9px 14px; }
+  .toast { left: 46%; right: calc(env(safe-area-inset-right) + 150px); bottom: calc(env(safe-area-inset-bottom) + 10px); }
+  .side { right: calc(env(safe-area-inset-right) + 10px); bottom: calc(env(safe-area-inset-bottom) + 30px); }
+  .side .addcam { min-height: 48px; padding: 10px 14px; font-size: 17px; }
+  .sheet { left: auto; right: 0; width: 56%; border-radius: var(--r) 0 0 0; max-height: 100%; overflow: auto; }
+  .start { font-size: 34px; }
+}
