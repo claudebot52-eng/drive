@@ -32,7 +32,7 @@ async function tt(path, query = {}) {
 // ---------- state ----------
 const state = {
   pos: null, heading: null, kmh: 0, lastFix: null,
-  follow: true, night: store.get("navlab.night", true),
+  follow: true, night: store.get("navlab.night", true), voice: store.get("navlab.voice", true),
   cameras: [], alerts: new CameraAlerts(),
   route: null,   // { pts, cum, instructions, summary, dest }
   drive: null,   // active drive: { t0, spoken:Set, offCount, lastReroute, reroutes, ... }
@@ -45,7 +45,7 @@ function say(text) {
   $("toast").hidden = false;
   clearTimeout(say.t);
   say.t = setTimeout(() => ($("toast").hidden = true), 6000);
-  if (!("speechSynthesis" in window)) return;
+  if (!state.voice || !("speechSynthesis" in window)) return;
   if (speechSynthesis.pending) speechSynthesis.cancel(); // never let old warnings queue up behind new ones
   const u = new SpeechSynthesisUtterance(text);
   u.lang = "en-GB";
@@ -64,7 +64,7 @@ function initMap() {
       sources: { base: { type: "raster", tiles: [tileUrl()], tileSize: 512, attribution: "© TomTom · cameras © OpenStreetMap" } },
       layers: [{ id: "base", type: "raster", source: "base" }],
     },
-    center: [SIM_START.lon, SIM_START.lat], zoom: 12, attributionControl: { compact: true },
+    center: [54.45, 24.42], zoom: 9, attributionControl: { compact: true },
   });
   map.on("dragstart", () => { state.follow = false; $("recenter").hidden = false; });
   map.on("load", async () => {
@@ -79,7 +79,7 @@ function initMap() {
   });
   const el = document.createElement("div");
   el.className = "me";
-  meMarker = new maplibregl.Marker({ element: el, rotationAlignment: "map" }).setLngLat([SIM_START.lon, SIM_START.lat]).addTo(map);
+  meMarker = new maplibregl.Marker({ element: el, rotationAlignment: "map" }); // added to the map on the first fix
 }
 
 function setNight(on) {
@@ -106,6 +106,7 @@ function onFix(lat, lon, speedMs, hdg, t = Date.now()) {
   if (heading != null) state.heading = heading;
   if (!prev || distance(prev.pos, pos) > 8 || t - prev.t > 5000) state.lastFix = { pos, t };
 
+  if (!prev) { meMarker.setLngLat([lon, lat]).addTo(map); gps("ok"); map.jumpTo({ center: [lon, lat], zoom: 15 }); }
   meMarker.setLngLat([lon, lat]);
   if (state.heading != null) meMarker.setRotation(state.heading);
   if (state.follow) {
@@ -143,7 +144,8 @@ $("q").addEventListener("input", () => {
 });
 
 async function search(q) {
-  const near = state.pos || SIM_START;
+  const c = map.getCenter();
+  const near = state.pos || { lat: c.lat, lon: c.lng };
   try {
     const j = await tt(`/search/2/search/${encodeURIComponent(q)}.json`, { limit: 6, countrySet: "AE", lat: near.lat, lon: near.lon });
     const box = $("results");
@@ -180,7 +182,8 @@ function drawRoute(route) {
 }
 
 async function plan(dest) {
-  const from = state.pos || SIM_START;
+  if (!state.pos) { say("No GPS position yet. Route needs your location."); return; }
+  const from = state.pos;
   try {
     state.route = await fetchRoute(from, dest);
   } catch (e) { say(`Route failed. ${e.message}`); return; }
@@ -285,12 +288,23 @@ async function keepAwake() {
 }
 document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible" && !$("start").isConnected) keepAwake(); });
 
+// GPS status line under the search box: waiting, blocked (with the fix), or hidden once a real fix arrives.
+function gps(status) {
+  const el = $("gps");
+  el.hidden = status === "ok";
+  el.classList.toggle("bad", status === "blocked");
+  if (status === "waiting") el.textContent = "Waiting for GPS…";
+  if (status === "blocked") el.textContent = "Location is blocked. iPhone Settings → Privacy & Security → Location Services → Safari Websites → While Using, and turn on Precise Location. Then reopen Drive.";
+  if (status === "none") el.textContent = "This browser gives no location to web apps.";
+}
+
 function startTracking() {
   if (SIM) return startSim();
-  if (!navigator.geolocation) return say("This phone gives no location to web apps.");
+  if (!navigator.geolocation) return gps("none");
+  gps("waiting");
   navigator.geolocation.watchPosition(
     (p) => onFix(p.coords.latitude, p.coords.longitude, p.coords.speed, p.coords.heading, p.timestamp),
-    (e) => say(e.code === 1 ? "Location blocked. Allow it in Settings, Safari, Location." : "No GPS signal yet."),
+    (e) => { if (e.code === 1) gps("blocked"); else if (!state.pos) gps("waiting"); },
     { enableHighAccuracy: true, maximumAge: 1000, timeout: 20000 });
 }
 
@@ -324,6 +338,15 @@ if (!STANDALONE && !SIM) $("start-hint").textContent = "Safari: first Share → 
 $("start").onclick = () => { $("start").remove(); say("Ready."); keepAwake(); startTracking(); };
 $("recenter").onclick = () => { state.follow = true; $("recenter").hidden = true; if (state.pos) map.easeTo({ center: [state.pos.lon, state.pos.lat], zoom: 15.5 }); };
 $("night").onclick = () => setNight(!state.night);
+function setVoice(on) {
+  state.voice = on;
+  store.set("navlab.voice", on);
+  $("voice").textContent = on ? "Voice on" : "Voice off";
+  $("voice").classList.toggle("off", !on);
+  if (!on && "speechSynthesis" in window) speechSynthesis.cancel(); // cut off anything mid-sentence
+}
+$("voice").onclick = () => { setVoice(!state.voice); if (state.voice) say("Voice on."); };
+setVoice(state.voice);
 $("go").onclick = go;
 $("cancel").onclick = () => endDrive(false);
 $("stop").onclick = () => endDrive(false);

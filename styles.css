@@ -47,3 +47,7 @@ body.over .speedo { background: var(--danger); }
 .me { width: 26px; height: 26px; border-radius: 50%; background: var(--accent); border: 3px solid #fff; box-shadow: 0 0 0 6px rgba(77, 163, 255, 0.25); position: relative; }
 .me::after { content: ""; position: absolute; left: 50%; top: -11px; transform: translateX(-50%); border: 7px solid transparent; border-bottom: 11px solid #fff; border-top: 0; }
 .maplibregl-ctrl-attrib { font-size: 10px; }
+
+.gps { margin-top: 8px; background: var(--panel); border-radius: 14px; padding: 10px 14px; color: var(--dim); font-size: 15px; }
+.gps.bad { background: var(--danger); color: #fff; font-weight: 600; }
+.side button.off { color: var(--dim); text-decoration: line-through; }
