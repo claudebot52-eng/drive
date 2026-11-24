@@ -1,5 +1,5 @@
 // navlab drive screen: map, speed, camera warnings, TomTom route + turn voice, drive log.
-import { distance, bearing, cameraAhead, CameraAlerts, cumulative, locateOnRoute, nextInstruction, fmtDist, sayDist, driveRecord, pointAt, lerpAngle, laneView, limitAt, parseLimit, OverSpeed, tollNote, clock, thin, incidentsOnRoute, turnIcon, thenTurn, tripStats, personalFactor, usualTrip, icsEvent, isDaylight } from "./geo.js";
+import { distance, bearing, cameraAhead, CameraAlerts, cumulative, locateOnRoute, nextInstruction, fmtDist, sayDist, driveRecord, pointAt, lerpAngle, laneView, limitAt, parseLimit, OverSpeed, tollNote, clock, thin, incidentsOnRoute, turnIcon, thenTurn, tripStats, personalFactor, usualTrip, icsEvent, isDaylight, prepFixes, limitFix } from "./geo.js";
 
 import { sunsetStyle, sunsetDayStyle } from "./colors.js";
 
@@ -8,7 +8,7 @@ const store = {
   get: (k, d) => { try { return JSON.parse(localStorage.getItem(k)) ?? d; } catch { return d; } },
   set: (k, v) => localStorage.setItem(k, JSON.stringify(v)),
 };
-const BUILD = "202611241525"; // stamped by deploy.sh
+const BUILD = "202611241721"; // stamped by deploy.sh
 const params = new URLSearchParams(location.search);
 const SIM = params.has("sim");
 const SIM_KMH = Number(params.get("kmh")) || 110;
@@ -39,7 +39,7 @@ async function tt(path, query = {}, body) {
 // ---------- state ----------
 const state = {
   pos: null, heading: null, kmh: 0, lastFix: null,
-  follow: true, theme: store.get("navlab.theme", "sunset"), voice: store.get("navlab.voice", true), roadLimit: null,
+  follow: true, theme: store.get("navlab.theme", "sunset"), voice: store.get("navlab.voice", true), roadLimit: null, limitFixes: [], course: null,
   cameras: [], alerts: new CameraAlerts(), overSpeed: new OverSpeed(),
   options: null, // routes offered on the plan card, fastest first
   route: null,   // { pts, cum, instructions, lanes, limits, tolls, incidents, summary, dest }
@@ -158,9 +158,13 @@ async function initMap() {
   });
   map.once("load", async () => {
     const data = await (await fetch("./cameras.json")).json();
+    // Stretches where TomTom's limit is out of date (see build_limit_fixes.py). The app works without the file.
+    try { state.limitFixes = prepFixes((await (await fetch("./limit_fixes.json")).json()).fixes); } catch { state.limitFixes = []; }
     const hidden = new Set(store.get("navlab.hiddencams", [])); // cameras the driver marked as not there
     state.cameras = data.cameras.map((c) => ({ lat: c.lat, lon: c.lon, limit: c.kind === "light" ? null : Number.parseInt(c.maxspeed, 10) || null, light: c.kind === "light" }))
       .filter((c) => !hidden.has(state.alerts.key(c)));
+    // camera lists are years old: on a corrected stretch the camera's number follows the corrected limit
+    for (const c of state.cameras) if (c.limit != null) c.limit = limitFix(c, null, state.limitFixes, { max: 60 }) ?? c.limit;
     // cameras the driver added by hand live on the phone and join the same list
     state.cameras.push(...store.get("navlab.mycams", []).map((c) => ({ lat: c.lat, lon: c.lon, limit: null, mine: true })));
     map.getSource("cams")?.setData(camGeo());
@@ -255,6 +259,7 @@ function onFix(lat, lon, speedMs, hdg, t = Date.now()) {
   state.pos = pos;
   state.kmh = kmh ?? 0;
   if (heading != null) state.heading = heading;
+  if (heading != null && state.kmh >= 15) state.course = { hdg: heading, t }; // last heading taken at driving speed
   if (!prev || distance(prev.pos, pos) > 8 || t - prev.t > 5000) state.lastFix = { pos, t };
 
   // What gets drawn: the raw fix, or, while navigating and within 30 m of the route, the matching point on the
@@ -270,7 +275,9 @@ function onFix(lat, lon, speedMs, hdg, t = Date.now()) {
   // Road speed limit, always on screen. On a route it comes with the route; where the route has none, and when
   // driving without a route, TomTom is asked for the road under the car. The last answer stays up; once it is over
   // a minute old it is greyed and no longer used for the red over-speed warning.
-  let shown = state.drive && state.route ? limitAt(state.route.limits, locateOnRoute(pos, state.route.pts, state.route.cum).along) : null;
+  // A hand-checked correction for this stretch beats both TomTom answers.
+  let shown = limitFix(pos, course(t), state.limitFixes)
+    ?? (state.drive && state.route ? limitAt(state.route.limits, locateOnRoute(pos, state.route.pts, state.route.cum).along) : null);
   let fresh = shown != null;
   state.limitFromRoute = fresh;
   if (shown == null) { lookupLimit(pos, t); shown = freeLimit.kmh; fresh = shown != null && t - freeLimit.t < 60000; }
@@ -286,6 +293,8 @@ function onFix(lat, lon, speedMs, hdg, t = Date.now()) {
 // Speed limit lookup: at most one per 8 s, and only after 250 m or 12 s on the move. Standing still it re-asks
 // once a minute. A 30-minute drive costs about 200 of the 2,500 free daily requests.
 const freeLimit = { kmh: null, t: 0, at: null, busy: false, asked: 0 };
+/** Heading from the last fix at driving speed, if it is under two minutes old. */
+const course = (now) => (state.course && now - state.course.t < 120000 ? state.course.hdg : null);
 async function lookupLimit(pos, now) {
   if (freeLimit.busy || now - freeLimit.asked < 8000) return;
   const moved = freeLimit.at ? distance(freeLimit.at, pos) : Infinity;
@@ -295,7 +304,10 @@ async function lookupLimit(pos, now) {
   freeLimit.at = pos;
   try {
     const q = { returnSpeedLimit: "true", radius: 40 };
-    if (state.heading != null && state.kmh >= 15) q.heading = Math.round(state.heading); // picks the right carriageway; meaningless when stopped
+    // The heading picks the right carriageway. In a queue the live heading is noise, and without one TomTom
+    // answers for the nearest road, often the service road, so the last heading from driving speed is kept.
+    const hdg = course(now);
+    if (hdg != null) q.heading = Math.round(hdg);
     const j = await tt(`/search/2/reverseGeocode/${pos.lat},${pos.lon}.json`, q);
     const kmh = parseLimit(j.addresses?.[0]?.address?.speedLimit);
     if (kmh != null) {

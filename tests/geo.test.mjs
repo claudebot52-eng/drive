@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { distance, bearing, angleDiff, cameraAhead, CameraAlerts, cumulative, locateOnRoute, nextInstruction, fmtDist, sayDist, driveRecord, pointAt, lerpAngle, laneView, limitAt, parseLimit, OverSpeed, darbPeak, tollNote, clock, thin, incidentsOnRoute, turnIcon, thenTurn, tripStats, personalFactor, usualTrip, icsEvent, isDaylight } from "../geo.js";
+import { distance, bearing, angleDiff, cameraAhead, CameraAlerts, cumulative, locateOnRoute, nextInstruction, fmtDist, sayDist, driveRecord, pointAt, lerpAngle, laneView, limitAt, parseLimit, OverSpeed, darbPeak, tollNote, clock, thin, incidentsOnRoute, turnIcon, thenTurn, tripStats, personalFactor, usualTrip, icsEvent, isDaylight, prepFixes, limitFix } from "../geo.js";
 
 const P = { lat: 24.4, lon: 54.5 };
 const north = (m) => ({ lat: P.lat + m / 111195, lon: P.lon });
@@ -247,4 +247,28 @@ test("isDaylight: Abu Dhabi sunrise and sunset, and the far north", () => {
   // Tromso: midnight sun in June, polar night in December
   assert.equal(isDaylight(new Date("2026-06-21T00:00:00Z"), 69.65, 18.96), true);
   assert.equal(isDaylight(new Date("2026-12-21T11:00:00Z"), 69.65, 18.96), false);
+});
+
+test("limitFix: corrected limit only on the matching carriageway", () => {
+  // two carriageways 30 m apart: eastbound (south line) fixed to 120, westbound (north line) fixed to 140
+  const eastbound = [P, east(1000)].map((p) => [p.lat, p.lon]);
+  const up = 30 / 111195;
+  const westbound = [east(1000), P].map((p) => [p.lat + up, p.lon]);
+  const fixes = prepFixes([{ kmh: 120, pts: eastbound }, { kmh: 140, pts: westbound }]);
+  const mid = east(500);
+  // on the eastbound line, 6 m off centre, heading east
+  assert.equal(limitFix({ lat: mid.lat + 6 / 111195, lon: mid.lon }, 90, fixes), 120);
+  // on the westbound line heading west
+  assert.equal(limitFix({ lat: mid.lat + up, lon: mid.lon }, 270, fixes), 140);
+  // GPS drifted halfway between the two: heading decides
+  assert.equal(limitFix({ lat: mid.lat + 14 / 111195, lon: mid.lon }, 270, fixes), 140);
+  assert.equal(limitFix({ lat: mid.lat + 16 / 111195, lon: mid.lon }, 90, fixes), 120);
+  // heading unknown: the nearer line
+  assert.equal(limitFix({ lat: mid.lat + 4 / 111195, lon: mid.lon }, null, fixes), 120);
+  // a road crossing the corridor at right angles is not on it
+  assert.equal(limitFix(mid, 0, fixes), null);
+  // a parallel service road 80 m away, and a point past the end of the stretch
+  assert.equal(limitFix({ lat: mid.lat - 80 / 111195, lon: mid.lon }, 90, fixes), null);
+  assert.equal(limitFix(east(1400), 90, fixes), null);
+  assert.equal(limitFix(mid, 90, []), null);
 });

@@ -183,6 +183,34 @@ export function limitAt(limits, along) {
   return null;
 }
 
+/** Readies limit_fixes.json for limitFix: points as {lat, lon}, plus a padded bounding box per piece for a quick skip. */
+export function prepFixes(raw) {
+  const pad = 0.0006; // about 60 m
+  return raw.map((f) => {
+    const pts = f.pts.map(([lat, lon]) => ({ lat, lon }));
+    const lats = pts.map((p) => p.lat), lons = pts.map((p) => p.lon);
+    return { kmh: f.kmh, pts, cum: cumulative(pts),
+      box: { s: Math.min(...lats) - pad, n: Math.max(...lats) + pad, w: Math.min(...lons) - pad, e: Math.max(...lons) + pad } };
+  });
+}
+
+/**
+ * Corrected speed limit for the road under `pos`, or null when no correction applies there. Each fix is one
+ * carriageway drawn in driving direction. It applies within `max` metres of its line and, when the heading is
+ * known, only to a car pointing the same way: the opposite carriageway runs 30 m alongside and can differ.
+ */
+export function limitFix(pos, heading, fixes, { max = 25, turn = 50 } = {}) {
+  let best = null;
+  for (const f of fixes) {
+    if (pos.lat < f.box.s || pos.lat > f.box.n || pos.lon < f.box.w || pos.lon > f.box.e) continue;
+    const loc = locateOnRoute(pos, f.pts, f.cum);
+    if (loc.off > max) continue;
+    if (heading != null && angleDiff(heading, bearing(f.pts[loc.index], f.pts[loc.index + 1])) > turn) continue;
+    if (!best || loc.off < best.off) best = { off: loc.off, kmh: f.kmh };
+  }
+  return best ? best.kmh : null;
+}
+
 /** "140.00KPH" (or MPH) from TomTom reverse geocoding -> km/h as a whole number, or null. */
 export function parseLimit(text) {
   const m = /^([\d.]+)\s*(KPH|MPH)$/i.exec(text || "");
