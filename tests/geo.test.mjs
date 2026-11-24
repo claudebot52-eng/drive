@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { distance, bearing, angleDiff, cameraAhead, CameraAlerts, cumulative, locateOnRoute, nextInstruction, fmtDist, sayDist, driveRecord, pointAt, lerpAngle, laneView, limitAt, parseLimit, OverSpeed, darbPeak, tollNote, clock, thin, incidentsOnRoute, turnIcon, thenTurn, tripStats, personalFactor, usualTrip, icsEvent, isDaylight, prepFixes, limitFix } from "../geo.js";
+import { distance, bearing, angleDiff, cameraAhead, CameraAlerts, cumulative, locateOnRoute, nextInstruction, fmtDist, sayDist, driveRecord, pointAt, lerpAngle, laneView, limitAt, parseLimit, OverSpeed, darbPeak, tollNote, clock, thin, incidentsOnRoute, turnIcon, thenTurn, tripStats, personalFactor, usualTrip, icsEvent, isDaylight, prepFixes, limitFix, pickLimit } from "../geo.js";
 
 const P = { lat: 24.4, lon: 54.5 };
 const north = (m) => ({ lat: P.lat + m / 111195, lon: P.lon });
@@ -271,4 +271,28 @@ test("limitFix: corrected limit only on the matching carriageway", () => {
   assert.equal(limitFix({ lat: mid.lat - 80 / 111195, lon: mid.lon }, 90, fixes), null);
   assert.equal(limitFix(east(1400), 90, fixes), null);
   assert.equal(limitFix(mid, 90, []), null);
+});
+
+test("limitFix: a two-way road matches either heading", () => {
+  const line = [P, east(1000)].map((p) => [p.lat, p.lon]);
+  const mid = east(500);
+  const oneWay = prepFixes([{ kmh: 80, pts: line }]);
+  const twoWay = prepFixes([{ kmh: 80, pts: line, two: 1 }]);
+  assert.equal(limitFix(mid, 270, oneWay), null);
+  assert.equal(limitFix(mid, 270, twoWay), 80);
+  assert.equal(limitFix(mid, 90, twoWay), 80);
+  assert.equal(limitFix(mid, 0, twoWay), null);
+});
+
+test("pickLimit: lower of two close sources, TomTom when they are far apart", () => {
+  assert.deepEqual(pickLimit(null, null), { kmh: null, unsure: false });
+  assert.deepEqual(pickLimit(120, null), { kmh: 120, unsure: false });
+  assert.deepEqual(pickLimit(null, 100), { kmh: 100, unsure: false });
+  assert.deepEqual(pickLimit(120, 120), { kmh: 120, unsure: false });
+  assert.deepEqual(pickLimit(140, 120), { kmh: 120, unsure: true }); // E22: the limit was cut, TomTom lagged
+  assert.deepEqual(pickLimit(100, 120), { kmh: 100, unsure: true }); // E20: the limit was cut, OpenStreetMap lagged
+  // 60+ apart: two different roads. On a route TomTom's number is the route's own; off a route it only guessed the nearest road.
+  assert.deepEqual(pickLimit(40, 120), { kmh: 120, unsure: true });
+  assert.deepEqual(pickLimit(40, 120, true), { kmh: 40, unsure: true });
+  assert.deepEqual(pickLimit(140, 60, true), { kmh: 140, unsure: true });
 });

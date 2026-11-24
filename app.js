@@ -1,5 +1,5 @@
 // navlab drive screen: map, speed, camera warnings, TomTom route + turn voice, drive log.
-import { distance, bearing, cameraAhead, CameraAlerts, cumulative, locateOnRoute, nextInstruction, fmtDist, sayDist, driveRecord, pointAt, lerpAngle, laneView, limitAt, parseLimit, OverSpeed, tollNote, clock, thin, incidentsOnRoute, turnIcon, thenTurn, tripStats, personalFactor, usualTrip, icsEvent, isDaylight, prepFixes, limitFix } from "./geo.js";
+import { distance, bearing, cameraAhead, CameraAlerts, cumulative, locateOnRoute, nextInstruction, fmtDist, sayDist, driveRecord, pointAt, lerpAngle, laneView, limitAt, parseLimit, OverSpeed, tollNote, clock, thin, incidentsOnRoute, turnIcon, thenTurn, tripStats, personalFactor, usualTrip, icsEvent, isDaylight, prepFixes, limitFix, pickLimit } from "./geo.js";
 
 import { sunsetStyle, sunsetDayStyle } from "./colors.js";
 
@@ -8,7 +8,7 @@ const store = {
   get: (k, d) => { try { return JSON.parse(localStorage.getItem(k)) ?? d; } catch { return d; } },
   set: (k, v) => localStorage.setItem(k, JSON.stringify(v)),
 };
-const BUILD = "202611241721"; // stamped by deploy.sh
+const BUILD = "202611241849"; // stamped by deploy.sh
 const params = new URLSearchParams(location.search);
 const SIM = params.has("sim");
 const SIM_KMH = Number(params.get("kmh")) || 110;
@@ -39,7 +39,7 @@ async function tt(path, query = {}, body) {
 // ---------- state ----------
 const state = {
   pos: null, heading: null, kmh: 0, lastFix: null,
-  follow: true, theme: store.get("navlab.theme", "sunset"), voice: store.get("navlab.voice", true), roadLimit: null, limitFixes: [], course: null,
+  follow: true, theme: store.get("navlab.theme", "sunset"), voice: store.get("navlab.voice", true), roadLimit: null, limitFixes: [], osmLimits: [], limitWhy: null, course: null,
   cameras: [], alerts: new CameraAlerts(), overSpeed: new OverSpeed(),
   options: null, // routes offered on the plan card, fastest first
   route: null,   // { pts, cum, instructions, lanes, limits, tolls, incidents, summary, dest }
@@ -160,8 +160,12 @@ async function initMap() {
     const data = await (await fetch("./cameras.json")).json();
     // Stretches where TomTom's limit is out of date (see build_limit_fixes.py). The app works without the file.
     try { state.limitFixes = prepFixes((await (await fetch("./limit_fixes.json")).json()).fixes); } catch { state.limitFixes = []; }
+    // OpenStreetMap's limit for every main road: the second opinion next to TomTom. Big file, so it loads on the side.
+    fetch("./limits_osm.json").then((r) => r.json()).then((d) => { state.osmLimits = prepFixes(d.roads); }).catch(() => {});
     const hidden = new Set(store.get("navlab.hiddencams", [])); // cameras the driver marked as not there
-    state.cameras = data.cameras.map((c) => ({ lat: c.lat, lon: c.lon, limit: c.kind === "light" ? null : Number.parseInt(c.maxspeed, 10) || null, light: c.kind === "light" }))
+    // A speed camera's number: its own tag and the road's limit beside it (worked out when the list is built) go
+    // through the same rule as the road sign, because camera lists are years old.
+    state.cameras = data.cameras.map((c) => ({ lat: c.lat, lon: c.lon, limit: c.kind === "light" ? null : pickLimit(Number.parseInt(c.maxspeed, 10) || null, c.road ?? null).kmh, light: c.kind === "light" }))
       .filter((c) => !hidden.has(state.alerts.key(c)));
     // camera lists are years old: on a corrected stretch the camera's number follows the corrected limit
     for (const c of state.cameras) if (c.limit != null) c.limit = limitFix(c, null, state.limitFixes, { max: 60 }) ?? c.limit;
@@ -272,22 +276,36 @@ function onFix(lat, lon, speedMs, hdg, t = Date.now()) {
   if (!prev) { meMarker.setLngLat([lon, lat]).addTo(map); gps("ok"); map.jumpTo({ center: [lon, lat], zoom: 15 }); suggestUsual(); tickLeave(); followSun(); }
   glideTo(show);
   $("speed").textContent = Math.round(state.kmh);
-  // Road speed limit, always on screen. On a route it comes with the route; where the route has none, and when
-  // driving without a route, TomTom is asked for the road under the car. The last answer stays up; once it is over
-  // a minute old it is greyed and no longer used for the red over-speed warning.
-  // A hand-checked correction for this stretch beats both TomTom answers.
-  let shown = limitFix(pos, course(t), state.limitFixes)
-    ?? (state.drive && state.route ? limitAt(state.route.limits, locateOnRoute(pos, state.route.pts, state.route.cum).along) : null);
-  let fresh = shown != null;
-  state.limitFromRoute = fresh;
-  if (shown == null) { lookupLimit(pos, t); shown = freeLimit.kmh; fresh = shown != null && t - freeLimit.t < 60000; }
-  state.roadLimit = fresh ? shown : null;
-  $("limit").hidden = false;
-  $("limit").textContent = shown ?? "–";
-  $("limit").classList.toggle("stale", !fresh);
+  showLimit(pos, t);
   if (state.overSpeed.check(state.kmh, state.roadLimit, t)) chime();
   checkCameras(t);
   if (state.drive) guide(t);
+}
+
+// Road speed limit, always on screen. Sources, in order of trust:
+//   1. a hand-checked correction for this stretch (limit_fixes.json);
+//   2. TomTom (the route's own limit while navigating, else a lookup of the road under the car) and OpenStreetMap,
+//      combined by pickLimit: where they differ a little, the lower one is shown and the sign gets a "?".
+// The last answer stays up; once nothing fresh is known it is greyed and not used for the over-speed warning.
+function showLimit(pos, t, ask = true) {
+  const hdg = course(t);
+  const fixed = limitFix(pos, hdg, state.limitFixes);
+  const osm = fixed == null ? limitFix(pos, hdg, state.osmLimits) : null;
+  let tom = state.drive && state.route ? limitAt(state.route.limits, locateOnRoute(pos, state.route.pts, state.route.cum).along) : null;
+  state.limitFromRoute = tom != null;
+  if (tom == null && fixed == null) {
+    if (ask) lookupLimit(pos, t);
+    tom = freeLimit.kmh != null && t - freeLimit.t < 60000 ? freeLimit.kmh : null;
+  }
+  const pick = fixed != null ? { kmh: fixed, unsure: false } : pickLimit(tom, osm, state.limitFromRoute);
+  const shown = pick.kmh ?? freeLimit.kmh; // nothing fresh: the last TomTom answer, greyed
+  state.roadLimit = pick.kmh;
+  state.limitWhy = { fixed, tomtom: tom, osm, shown: pick.kmh };
+  const el = $("limit");
+  el.hidden = false;
+  el.textContent = shown ?? "–";
+  el.classList.toggle("stale", pick.kmh == null);
+  el.classList.toggle("unsure", pick.kmh != null && pick.unsure);
 }
 
 // Speed limit lookup: at most one per 8 s, and only after 250 m or 12 s on the move. Standing still it re-asks
@@ -314,7 +332,7 @@ async function lookupLimit(pos, now) {
       freeLimit.kmh = kmh;
       freeLimit.t = now; // same clock as the fixes
       // show it at once; a parked phone may not send another fix for a while
-      if (!state.limitFromRoute) { state.roadLimit = kmh; $("limit").textContent = kmh; $("limit").classList.remove("stale"); }
+      if (state.pos) showLimit(state.pos, now, false);
     }
   } catch { /* no signal or quota: the sign simply disappears after 45 s */ }
   freeLimit.busy = false;
@@ -941,6 +959,19 @@ $("set-home").onclick = () => setQuick("home", state.route.dest);
 $("set-work").onclick = () => setQuick("work", state.route.dest);
 $("add-stop").onclick = openStops;
 $("cam").onclick = () => { if (state.camHit) hideCamera(state.camHit); };
+// Tap the limit sign to see where the number comes from.
+$("limit").onclick = () => {
+  const w = state.limitWhy;
+  if (!w) return;
+  const text = w.fixed != null ? `Limit ${w.fixed}: corrected from an official notice.`
+    : w.tomtom != null && w.osm != null && w.tomtom !== w.osm ? `TomTom says ${w.tomtom}, OpenStreetMap says ${w.osm}. Showing ${w.shown}.`
+    : w.shown != null ? `Limit ${w.shown} (${[w.tomtom != null && "TomTom", w.osm != null && "OpenStreetMap"].filter(Boolean).join(" and ")}).`
+    : "No fresh limit for this road.";
+  $("toast").textContent = text;
+  $("toast").hidden = false;
+  clearTimeout(say.t);
+  say.t = setTimeout(() => ($("toast").hidden = true), 6000);
+};
 $("arrive-by").onchange = planLeave;
 $("leave-remind").onclick = remindLeave;
 $("leave-calendar").onclick = leaveToCalendar;

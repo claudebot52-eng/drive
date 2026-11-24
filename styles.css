@@ -66,6 +66,7 @@ body.over .speedo { background: var(--danger); }
 /* road speed limit, drawn like the road sign */
 .limit { position: fixed; left: 112px; bottom: calc(env(safe-area-inset-bottom) + 104px); z-index: 5; width: 58px; height: 58px; border-radius: 50%; background: #fff; color: #111; border: 6px solid #e02020; display: flex; align-items: center; justify-content: center; font-size: 21px; font-weight: 800; font-variant-numeric: tabular-nums; }
 .limit.stale { border-color: #9aa4b1; color: #6b7480; }
+.limit.unsure::after { content: "?"; position: absolute; top: -9px; right: -9px; width: 20px; height: 20px; border-radius: 50%; background: #ffb020; color: #111; font-size: 13px; font-weight: 800; display: flex; align-items: center; justify-content: center; }
 
 /* Sunset: neon dusk. Pink-to-orange bar, purple glass panels, cyan position dot. */
 [data-theme="sunset"] { --bg: #12051f; --panel: rgba(28, 8, 48, 0.9); --text: #fff1fa; --dim: #e3a9d4; --accent: #ff2d95; --on-accent: #fff; --line: #4a1a66; --card: #1c0830; --field: #12051f; --nav: linear-gradient(105deg, #ff2d95 0%, #ff5e62 55%, #ff9a3d 100%); --nav-text: #fff; --nav-dim: #ffe3f1; --ring: #ff2d95; }

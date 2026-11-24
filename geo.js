@@ -189,7 +189,7 @@ export function prepFixes(raw) {
   return raw.map((f) => {
     const pts = f.pts.map(([lat, lon]) => ({ lat, lon }));
     const lats = pts.map((p) => p.lat), lons = pts.map((p) => p.lon);
-    return { kmh: f.kmh, pts, cum: cumulative(pts),
+    return { kmh: f.kmh, two: !!f.two, pts, cum: cumulative(pts),
       box: { s: Math.min(...lats) - pad, n: Math.max(...lats) + pad, w: Math.min(...lons) - pad, e: Math.max(...lons) + pad } };
   });
 }
@@ -205,10 +205,28 @@ export function limitFix(pos, heading, fixes, { max = 25, turn = 50 } = {}) {
     if (pos.lat < f.box.s || pos.lat > f.box.n || pos.lon < f.box.w || pos.lon > f.box.e) continue;
     const loc = locateOnRoute(pos, f.pts, f.cum);
     if (loc.off > max) continue;
-    if (heading != null && angleDiff(heading, bearing(f.pts[loc.index], f.pts[loc.index + 1])) > turn) continue;
+    if (heading != null) {
+      const off = angleDiff(heading, bearing(f.pts[loc.index], f.pts[loc.index + 1]));
+      if (off > turn && !(f.two && 180 - off <= turn)) continue; // a two-way road is drawn once and serves both headings
+    }
     if (!best || loc.off < best.off) best = { off: loc.off, kmh: f.kmh };
   }
   return best ? best.kmh : null;
+}
+
+/**
+ * The limit to show when TomTom and OpenStreetMap may both know the road. Same number or one source: that number.
+ * Up to 40 km/h apart: the lower one, marked unsure. Every Abu Dhabi limit change checked in 2024-26 was a cut that
+ * one of the two had not caught up with, so the lower was right, and a limit shown too low costs a minute while one
+ * shown too high costs a fine. Further apart, one of them is describing a different road (a service road beside a
+ * motorway): on a route TomTom's number belongs to the road being driven, so it is kept; without a route TomTom
+ * only guessed the nearest road, while the OpenStreetMap road was matched by position and heading, so that wins.
+ */
+export function pickLimit(tomtom, osm, onRoute = false) {
+  if (tomtom == null || osm == null) return { kmh: tomtom ?? osm ?? null, unsure: false };
+  if (tomtom === osm) return { kmh: tomtom, unsure: false };
+  if (Math.abs(tomtom - osm) <= 40) return { kmh: Math.min(tomtom, osm), unsure: true };
+  return { kmh: onRoute ? tomtom : osm, unsure: true };
 }
 
 /** "140.00KPH" (or MPH) from TomTom reverse geocoding -> km/h as a whole number, or null. */
