@@ -65,3 +65,4 @@ body.over .speedo { background: var(--danger); }
 [data-theme="neon"] .lanes span.use { background: var(--accent); color: #000; }
 /* road speed limit, drawn like the road sign */
 .limit { position: fixed; left: 112px; bottom: calc(env(safe-area-inset-bottom) + 104px); z-index: 5; width: 58px; height: 58px; border-radius: 50%; background: #fff; color: #111; border: 6px solid #e02020; display: flex; align-items: center; justify-content: center; font-size: 21px; font-weight: 800; font-variant-numeric: tabular-nums; }
+.limit.stale { border-color: #9aa4b1; color: #6b7480; }

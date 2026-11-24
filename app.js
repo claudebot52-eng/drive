@@ -214,30 +214,42 @@ function onFix(lat, lon, speedMs, hdg, t = Date.now()) {
   if (!prev) { meMarker.setLngLat([lon, lat]).addTo(map); gps("ok"); map.jumpTo({ center: [lon, lat], zoom: 15 }); }
   glideTo(show);
   $("speed").textContent = Math.round(state.kmh);
-  // Road speed limit. On a route it comes with the route. Otherwise TomTom is asked for the road under the car.
-  if (state.drive && state.route) state.roadLimit = limitAt(state.route.limits, locateOnRoute(pos, state.route.pts, state.route.cum).along);
-  else { lookupLimit(pos, t); state.roadLimit = freeLimit.kmh != null && t - freeLimit.t < 45000 ? freeLimit.kmh : null; }
-  $("limit").hidden = state.roadLimit == null;
-  if (state.roadLimit != null) $("limit").textContent = state.roadLimit;
+  // Road speed limit, always on screen. On a route it comes with the route; where the route has none, and when
+  // driving without a route, TomTom is asked for the road under the car. The last answer stays up; once it is over
+  // a minute old it is greyed and no longer used for the red over-speed warning.
+  let shown = state.drive && state.route ? limitAt(state.route.limits, locateOnRoute(pos, state.route.pts, state.route.cum).along) : null;
+  let fresh = shown != null;
+  state.limitFromRoute = fresh;
+  if (shown == null) { lookupLimit(pos, t); shown = freeLimit.kmh; fresh = shown != null && t - freeLimit.t < 60000; }
+  state.roadLimit = fresh ? shown : null;
+  $("limit").hidden = false;
+  $("limit").textContent = shown ?? "–";
+  $("limit").classList.toggle("stale", !fresh);
   checkCameras(t);
   if (state.drive) guide(t);
 }
 
-// Speed limit while driving without a route: one small lookup per 250 m (or 12 s), only when actually moving.
-// A 30-minute drive costs about 100 of the 2,500 free daily requests.
+// Speed limit lookup: at most one per 8 s, and only after 250 m or 12 s on the move. Standing still it re-asks
+// once a minute. A 30-minute drive costs about 200 of the 2,500 free daily requests.
 const freeLimit = { kmh: null, t: 0, at: null, busy: false, asked: 0 };
 async function lookupLimit(pos, now) {
-  if (freeLimit.busy || state.kmh < 15 || now - freeLimit.asked < 8000) return;
-  if (freeLimit.at && distance(freeLimit.at, pos) < 250 && now - freeLimit.asked < 12000) return;
+  if (freeLimit.busy || now - freeLimit.asked < 8000) return;
+  const moved = freeLimit.at ? distance(freeLimit.at, pos) : Infinity;
+  if (moved < 250 && now - freeLimit.asked < (moved < 30 ? 60000 : 12000)) return;
   freeLimit.busy = true;
   freeLimit.asked = now;
   freeLimit.at = pos;
   try {
     const q = { returnSpeedLimit: "true", radius: 40 };
-    if (state.heading != null) q.heading = Math.round(state.heading); // picks the right carriageway
+    if (state.heading != null && state.kmh >= 15) q.heading = Math.round(state.heading); // picks the right carriageway; meaningless when stopped
     const j = await tt(`/search/2/reverseGeocode/${pos.lat},${pos.lon}.json`, q);
     const kmh = parseLimit(j.addresses?.[0]?.address?.speedLimit);
-    if (kmh != null) { freeLimit.kmh = kmh; freeLimit.t = now; } // same clock as the fixes
+    if (kmh != null) {
+      freeLimit.kmh = kmh;
+      freeLimit.t = now; // same clock as the fixes
+      // show it at once; a parked phone may not send another fix for a while
+      if (!state.limitFromRoute) { state.roadLimit = kmh; $("limit").textContent = kmh; $("limit").classList.remove("stale"); }
+    }
   } catch { /* no signal or quota: the sign simply disappears after 45 s */ }
   freeLimit.busy = false;
 }
@@ -390,7 +402,6 @@ function endDrive(arrived) {
   drawRoute(null);
   $("nav").hidden = true;
   $("lanes").hidden = true;
-  $("limit").hidden = true;
   $("plan").hidden = true;
   $("searchbar").hidden = false;
   $("q").value = "";
