@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { distance, bearing, angleDiff, cameraAhead, CameraAlerts, cumulative, locateOnRoute, nextInstruction, fmtDist, sayDist } from "../geo.js";
+import { distance, bearing, angleDiff, cameraAhead, CameraAlerts, cumulative, locateOnRoute, nextInstruction, fmtDist, sayDist, driveRecord } from "../geo.js";
 
 const P = { lat: 24.4, lon: 54.5 };
 const north = (m) => ({ lat: P.lat + m / 111195, lon: P.lon });
@@ -63,4 +63,15 @@ test("nextInstruction and formatting", () => {
   assert.equal(sayDist(420), "400 metres");
   assert.equal(sayDist(2000), "2 kilometres");
   assert.equal(sayDist(20), "50 metres");
+});
+
+test("driveRecord: arrival, End near the destination, End early, mis-tap", () => {
+  const base = { t0: 0, name: "X", predicted: 1200, noTraffic: 1100, metres: 20000, reroutes: 0 };
+  const arrived = driveRecord({ ...base, now: 1300e3, leftM: 20, remainingS: 2, arrived: true });
+  assert.equal(arrived.predicted_s, 1200); assert.equal(arrived.actual_s, 1300); assert.equal(arrived.ended_early, undefined);
+  const nearEnd = driveRecord({ ...base, now: 1250e3, leftM: 250, remainingS: 30, arrived: false });
+  assert.equal(nearEnd.predicted_s, 1200); assert.equal(nearEnd.ended_early, undefined);
+  const early = driveRecord({ ...base, now: 700e3, leftM: 8000, remainingS: 480, arrived: false });
+  assert.equal(early.ended_early, true); assert.equal(early.predicted_s, 720); assert.equal(early.left_m, 8000); assert.equal(early.full_predicted_s, 1200);
+  assert.equal(driveRecord({ ...base, now: 20e3, leftM: 19900, remainingS: 1190, arrived: false }), null);
 });

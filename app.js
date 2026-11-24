@@ -1,5 +1,5 @@
 // navlab drive screen: map, speed, camera warnings, TomTom route + turn voice, drive log.
-import { distance, bearing, cameraAhead, CameraAlerts, cumulative, locateOnRoute, nextInstruction, fmtDist, sayDist } from "./geo.js";
+import { distance, bearing, cameraAhead, CameraAlerts, cumulative, locateOnRoute, nextInstruction, fmtDist, sayDist, driveRecord } from "./geo.js";
 
 const $ = (id) => document.getElementById(id);
 const store = {
@@ -201,7 +201,7 @@ async function plan(dest) {
 
 function go() {
   const s = state.route.summary;
-  state.drive = { t0: Date.now(), name: state.route.dest.name, predicted: s.secs, noTraffic: s.noTraffic, metres: s.metres, spoken: new Set(), offCount: 0, lastReroute: 0, reroutes: 0 };
+  state.drive = { t0: Date.now(), name: state.route.dest.name, predicted: s.secs, noTraffic: s.noTraffic, metres: s.metres, leftM: s.metres, remainingS: s.secs, spoken: new Set(), offCount: 0, lastReroute: 0, reroutes: 0 };
   $("plan").hidden = true;
   $("nav").hidden = false;
   $("searchbar").hidden = true;
@@ -211,14 +211,17 @@ function go() {
   say(`Route to ${state.route.dest.name}. ${Math.round(s.secs / 60)} minutes.`);
 }
 
+// Called on arrival and by the End button. Both save the drive; only a mis-tap (under a minute or 500 m) is dropped.
 function endDrive(arrived) {
   const d = state.drive;
-  if (arrived) {
-    const actual = Math.round((Date.now() - d.t0) / 1000);
+  const rec = d && driveRecord({ ...d, now: Date.now(), arrived });
+  if (rec) {
+    if (SIM) rec.simulated = true;
     const drives = store.get("navlab.drives", []);
-    drives.push({ start: new Date(d.t0).toISOString(), to: d.name, predicted_s: d.predicted, no_traffic_s: d.noTraffic, actual_s: actual, metres: d.metres, reroutes: d.reroutes, simulated: SIM || undefined });
+    drives.push(rec);
     store.set("navlab.drives", drives);
-    say(`Arrived. Predicted ${Math.round(d.predicted / 60)} minutes, took ${Math.round(actual / 60)}.`);
+    const mins = `Predicted ${Math.round(rec.predicted_s / 60)} minutes, took ${Math.round(rec.actual_s / 60)}.`;
+    say(rec.ended_early ? `Drive saved, ended ${sayDist(rec.left_m)} early. ${mins}` : `${arrived ? "Arrived" : "Drive saved"}. ${mins}`);
   }
   state.drive = null;
   state.route = null;
@@ -234,6 +237,8 @@ async function guide(now) {
   const { route, drive } = state;
   const loc = locateOnRoute(state.pos, route.pts, route.cum);
   const left = route.summary.metres - loc.along;
+  drive.leftM = left;
+  drive.remainingS = (route.summary.secs * left) / route.summary.metres;
 
   if (distance(state.pos, route.dest) < 60 || left < 40) return endDrive(true);
 
@@ -276,7 +281,7 @@ function showDrives() {
     const row = document.createElement("div");
     const diff = Math.round((d.actual_s - d.predicted_s) / 60);
     row.className = "drive";
-    row.textContent = `${d.start.slice(0, 16).replace("T", " ")} · ${d.to} · predicted ${Math.round(d.predicted_s / 60)} · took ${Math.round(d.actual_s / 60)} (${diff >= 0 ? "+" : ""}${diff} min)${d.simulated ? " · simulated" : ""}`;
+    row.textContent = `${d.start.slice(0, 16).replace("T", " ")} · ${d.to} · predicted ${Math.round(d.predicted_s / 60)} · took ${Math.round(d.actual_s / 60)} (${diff >= 0 ? "+" : ""}${diff} min)${d.ended_early ? ` · ended ${fmtDist(d.left_m)} early` : ""}${d.simulated ? " · simulated" : ""}`;
     return row;
   }));
   $("drives").hidden = false;

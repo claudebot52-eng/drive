@@ -124,3 +124,18 @@ export function sayDist(m) {
   if (m >= 1000) return `${(m / 1000).toFixed(1).replace(".0", "")} kilometres`;
   return `${Math.max(50, Math.round(m / 50) * 50)} metres`;
 }
+
+/**
+ * Log entry for a finished drive, or null when it is too short to mean anything (a mis-tap).
+ * Ending by hand within 300 m of the destination counts as arriving. Ending earlier keeps the drive but compares only
+ * the part driven: TomTom's full prediction minus the time it still expected for the road left.
+ */
+export function driveRecord({ t0, now, name, predicted, noTraffic, metres, reroutes, leftM, remainingS, arrived }) {
+  const actual = Math.round((now - t0) / 1000);
+  const complete = arrived || leftM < 300;
+  if (!complete && (actual < 60 || metres - leftM < 500)) return null;
+  const rec = { start: new Date(t0).toISOString(), to: name, predicted_s: complete ? predicted : Math.max(0, Math.round(predicted - remainingS)),
+    no_traffic_s: noTraffic, actual_s: actual, metres, reroutes };
+  if (!complete) { rec.ended_early = true; rec.left_m = Math.round(leftM); rec.full_predicted_s = predicted; }
+  return rec;
+}
