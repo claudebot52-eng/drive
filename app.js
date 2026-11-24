@@ -62,7 +62,7 @@ function initMap() {
     container: "map",
     style: {
       version: 8,
-      sources: { base: { type: "raster", tiles: [tileUrl()], tileSize: 512, attribution: "© TomTom · cameras © OpenStreetMap" } },
+      sources: { base: { type: "raster", tiles: [tileUrl()], tileSize: 512, attribution: '© TomTom · cameras © OpenStreetMap, <a href="https://mapatlas.eu/tools/speed-camera-map">MapAtlas</a> CC BY 4.0' } },
       layers: [{ id: "base", type: "raster", source: "base" }],
     },
     center: [54.45, 24.42], zoom: 9, attributionControl: { compact: true },
@@ -80,7 +80,7 @@ function initMap() {
     map.addLayer({ id: "route-casing", type: "line", source: "route", paint: { "line-color": "#0b3d91", "line-width": 9 }, layout: { "line-cap": "round", "line-join": "round" } });
     map.addLayer({ id: "route", type: "line", source: "route", paint: { "line-color": "#4da3ff", "line-width": 5 }, layout: { "line-cap": "round", "line-join": "round" } });
     const data = await (await fetch("./cameras.json")).json();
-    state.cameras = data.cameras.map((c) => ({ lat: c.lat, lon: c.lon, limit: Number.parseInt(c.maxspeed, 10) || null }));
+    state.cameras = data.cameras.map((c) => ({ lat: c.lat, lon: c.lon, limit: Number.parseInt(c.maxspeed, 10) || null, light: c.kind === "light" }));
     // cameras the driver added by hand live on the phone and join the same list
     state.cameras.push(...store.get("navlab.mycams", []).map((c) => ({ lat: c.lat, lon: c.lon, limit: null, mine: true })));
     map.addSource("cams", { type: "geojson", data: camGeo() });
@@ -181,11 +181,12 @@ function checkCameras(now) {
   const limit = hit.camera.limit;
   const over = limit != null && state.kmh > limit;
   chip.hidden = false;
-  chip.textContent = `Camera ${fmtDist(hit.dist)}${limit ? ` · limit ${limit}` : ""}`;
+  const what = hit.camera.light ? "Red light camera" : "Camera";
+  chip.textContent = `${what} ${fmtDist(hit.dist)}${limit ? ` · limit ${limit}` : ""}`;
   document.body.classList.toggle("over", over);
   const stage = state.alerts.check(hit, now);
-  if (stage === "far") say(`Speed camera ahead, ${sayDist(hit.dist)}.${limit ? ` Limit ${limit}.` : ""}`);
-  if (stage === "near") say(over ? `Camera. Slow down, limit ${limit}.` : `Camera, ${sayDist(hit.dist)}.`);
+  if (stage === "far") say(`${hit.camera.light ? "Red light camera" : "Speed camera"} ahead, ${sayDist(hit.dist)}.${limit ? ` Limit ${limit}.` : ""}`);
+  if (stage === "near") say(over ? `${what}. Slow down, limit ${limit}.` : `${what}, ${sayDist(hit.dist)}.`);
 }
 
 // ---------- saved places ----------
