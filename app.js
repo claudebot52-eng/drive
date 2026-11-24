@@ -1,5 +1,5 @@
 // navlab drive screen: map, speed, camera warnings, TomTom route + turn voice, drive log.
-import { distance, bearing, cameraAhead, CameraAlerts, cumulative, locateOnRoute, nextInstruction, fmtDist, sayDist, driveRecord, pointAt, lerpAngle, laneView, limitAt, parseLimit } from "./geo.js";
+import { distance, bearing, cameraAhead, CameraAlerts, cumulative, locateOnRoute, nextInstruction, fmtDist, sayDist, driveRecord, pointAt, lerpAngle, laneView, limitAt, parseLimit, OverSpeed, tollNote, clock, thin, incidentsOnRoute } from "./geo.js";
 
 import { sunsetStyle } from "./colors.js";
 
@@ -28,9 +28,10 @@ if (location.hash.startsWith("#key=")) {
 let KEY = store.get("navlab.key", "");
 
 const TT = "https://api.tomtom.com";
-async function tt(path, query = {}) {
+async function tt(path, query = {}, body) {
   const pairs = Array.isArray(query) ? query : Object.entries(query); // an array of pairs allows a key twice
-  const res = await fetch(`${TT}${path}?${new URLSearchParams([["key", KEY], ...pairs])}`);
+  const res = await fetch(`${TT}${path}?${new URLSearchParams([["key", KEY], ...pairs])}`,
+    body ? { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) } : undefined);
   if (!res.ok) throw new Error(`TomTom ${res.status}`);
   return res.json();
 }
@@ -39,11 +40,15 @@ async function tt(path, query = {}) {
 const state = {
   pos: null, heading: null, kmh: 0, lastFix: null,
   follow: true, theme: store.get("navlab.theme", "sunset"), voice: store.get("navlab.voice", true), roadLimit: null,
-  cameras: [], alerts: new CameraAlerts(),
-  route: null,   // { pts, cum, instructions, summary, dest }
+  cameras: [], alerts: new CameraAlerts(), overSpeed: new OverSpeed(),
+  options: null, // routes offered on the plan card, fastest first
+  route: null,   // { pts, cum, instructions, lanes, limits, tolls, incidents, summary, dest }
   drive: null,   // active drive: { t0, spoken:Set, offCount, lastReroute, reroutes, ... }
 };
 let map, meMarker;
+// Choices from the Menu, remembered on the phone.
+const settings = { avoidTolls: false, avoidMotorways: false, beep: true, ...store.get("navlab.settings", {}) };
+const REFRESH_MS = (Number(params.get("refresh")) || 150) * 1000; // how often a drive re-checks traffic
 
 // ---------- voice ----------
 function say(text) {
@@ -72,7 +77,7 @@ const THEMES = [
   { id: "sat", label: "Satellite", map: "2/basic_street-satellite", flow: "dark" },
 ];
 const theme = () => THEMES.find((t) => t.id === state.theme) || THEMES[0];
-const styleUrl = () => `${TT}/style/1/style/22.2.1-*?key=${KEY}&map=${theme().map}&traffic_flow=2/flow_relative-${theme().flow}`;
+const styleUrl = () => `${TT}/style/1/style/22.2.1-*?key=${KEY}&map=${theme().map}&traffic_flow=2/flow_relative-${theme().flow}&traffic_incidents=2/incidents_${theme().flow}`;
 // TomTom's style file is fetched by hand so it can be repaired before the map sees it: it contains a colour
 // written as "hsl(160, 43%, 24%%)", which MapLibre rejects, refusing the whole map.
 async function loadStyle() {
@@ -97,6 +102,8 @@ const ATTRIBUTION = '© TomTom · cameras © OpenStreetMap, <a href="https://map
 function addOverlays() {
   // The route goes above every road but under the street names: before the first layer that draws text.
   const firstLabel = map.getStyle().layers.find((l) => l.type === "symbol" && l.layout?.["text-field"])?.id;
+  map.addSource("alts", { type: "geojson", data: altsGeo() });
+  map.addLayer({ id: "alts", type: "line", source: "alts", paint: { "line-color": "#9aa4b1", "line-width": 5, "line-opacity": 0.75 }, layout: { "line-cap": "round", "line-join": "round" } }, firstLabel);
   map.addSource("route", { type: "geojson", data: routeGeo(state.route) });
   map.addLayer({ id: "route-casing", type: "line", source: "route", paint: { "line-color": theme().casing || "#0b3d91", "line-width": 10 }, layout: { "line-cap": "round", "line-join": "round" } }, firstLabel);
   map.addLayer({ id: "route", type: "line", source: "route", paint: { "line-color": theme().route || "#4da3ff", "line-width": 6 }, layout: { "line-cap": "round", "line-join": "round" } }, firstLabel);
@@ -230,6 +237,7 @@ function onFix(lat, lon, speedMs, hdg, t = Date.now()) {
   $("limit").hidden = false;
   $("limit").textContent = shown ?? "–";
   $("limit").classList.toggle("stale", !fresh);
+  if (state.overSpeed.check(state.kmh, state.roadLimit, t)) chime();
   checkCameras(t);
   if (state.drive) guide(t);
 }
@@ -278,24 +286,69 @@ function checkCameras(now) {
   if (stage === "near") say(over ? `${what}. Slow down, limit ${limit}.` : `${what}, ${sayDist(hit.dist)}.`);
 }
 
-// ---------- saved places ----------
+// ---------- sound ----------
+let audio;
+// Two short pips for "over the limit". Needs the audio system woken by a tap (the Start button does that).
+function chime() {
+  if (!settings.beep || !audio) return;
+  for (const at of [0, 0.18]) {
+    const o = audio.createOscillator(), g = audio.createGain(), t0 = audio.currentTime + at;
+    o.frequency.value = 1040;
+    g.gain.setValueAtTime(0.0001, t0);
+    g.gain.exponentialRampToValueAtTime(0.35, t0 + 0.02);
+    g.gain.exponentialRampToValueAtTime(0.0001, t0 + 0.13);
+    o.connect(g).connect(audio.destination);
+    o.start(t0);
+    o.stop(t0 + 0.15);
+  }
+}
+
+// ---------- saved places, Home / Work, recents ----------
 // A place is where the driver really stopped for a destination (the car park, not the building's map pin).
 const places = () => store.get("navlab.places", []);
 function savePlace(name, pos) {
   store.set("navlab.places", [{ name, lat: pos.lat, lon: pos.lon }, ...places().filter((p) => p.name !== name)].slice(0, 30));
 }
+const recents = () => store.get("navlab.recents", []);
+function addRecent(dest) {
+  if (["Dropped pin", "Home", "Work"].includes(dest.name)) return;
+  store.set("navlab.recents", [{ name: dest.name, lat: dest.lat, lon: dest.lon }, ...recents().filter((r) => r.name !== dest.name)].slice(0, 8));
+}
+
+// Search box tapped while empty: parking spots first, then recent destinations.
 function showPlaces() {
   const box = $("results");
-  const list = places();
-  box.replaceChildren(...list.map((pl) => {
+  const spots = places();
+  const rows = [...spots.map((pl) => ({ ...pl, kind: "places", note: "Your parking spot" })),
+    ...recents().filter((r) => !spots.some((pl) => pl.name === r.name)).map((r) => ({ ...r, kind: "recents", note: "Recent" }))];
+  box.replaceChildren(...rows.map((row) => {
     const b = document.createElement("button");
-    b.innerHTML = `<strong></strong><span>Your parking spot · tap to route</span><i class="del" role="button" aria-label="Remove">✕</i>`;
-    b.firstChild.textContent = pl.name;
-    b.onclick = () => { box.hidden = true; $("q").blur(); plan({ ...pl, saved: true }); };
-    b.lastChild.onclick = (e) => { e.stopPropagation(); store.set("navlab.places", places().filter((x) => x.name !== pl.name)); showPlaces(); };
+    b.innerHTML = `<strong></strong><span></span><i class="del" role="button" aria-label="Remove">✕</i>`;
+    b.firstChild.textContent = row.name;
+    b.children[1].textContent = `${row.note} · tap to route`;
+    b.onclick = () => { box.hidden = true; $("q").blur(); plan({ name: row.name, lat: row.lat, lon: row.lon, saved: row.kind === "places", parking: row.kind === "places" }); };
+    b.lastChild.onclick = (e) => { e.stopPropagation(); store.set(`navlab.${row.kind}`, store.get(`navlab.${row.kind}`, []).filter((x) => x.name !== row.name)); showPlaces(); };
     return b;
   }));
-  box.hidden = list.length === 0;
+  box.hidden = rows.length === 0;
+}
+
+// Home and Work: one tap to route. First tap on an unset one offers to save where the car is now.
+function renderQuick() {
+  for (const kind of ["home", "work"]) $(kind).classList.toggle("unset", !store.get(`navlab.${kind}`, null));
+}
+function quick(kind) {
+  const label = kind === "home" ? "Home" : "Work";
+  const saved = store.get(`navlab.${kind}`, null);
+  if (saved) return plan({ ...saved, saved: true });
+  if (!state.pos) return say("No GPS yet.");
+  if (confirm(`Set ${label} to where you are now? You can also search a place and tap "Set as ${label}".`)) setQuick(kind, state.pos);
+}
+function setQuick(kind, pos) {
+  const label = kind === "home" ? "Home" : "Work";
+  store.set(`navlab.${kind}`, { name: label, lat: pos.lat, lon: pos.lon });
+  renderQuick();
+  say(`${label} saved.`);
 }
 
 // ---------- search ----------
@@ -327,12 +380,19 @@ async function search(q) {
   } catch (e) { say(`Search failed. ${e.message}`); }
 }
 
-// ---------- route ----------
-async function fetchRoute(from, dest) {
-  const j = await tt(`/routing/1/calculateRoute/${from.lat},${from.lon}:${dest.lat},${dest.lon}/json`,
-    [["traffic", "true"], ["travelMode", "car"], ["routeType", "fastest"], ["instructionsType", "text"], ["language", "en-GB"],
-      ["computeTravelTimeFor", "all"], ["sectionType", "lanes"], ["sectionType", "speedLimit"]]);
-  const r = j.routes[0];
+// ---------- routes ----------
+function routeQuery({ alternatives = 0, better = false } = {}) {
+  const q = [["traffic", "true"], ["travelMode", "car"], ["routeType", "fastest"], ["instructionsType", "text"], ["language", "en-GB"],
+    ["computeTravelTimeFor", "all"], ["sectionType", "lanes"], ["sectionType", "speedLimit"], ["sectionType", "toll"]];
+  if (settings.avoidTolls) q.push(["avoid", "tollRoads"]);
+  if (settings.avoidMotorways) q.push(["avoid", "motorways"]);
+  if (alternatives) q.push(["maxAlternatives", String(alternatives)]);
+  // "betterRoute": TomTom returns the given route first and adds another only if it is at least 2 minutes quicker
+  if (better) q.push(["alternativeType", "betterRoute"], ["minDeviationTime", "120"], ["minDeviationDistance", "500"]);
+  return q;
+}
+
+function parseRoute(r, dest) {
   const pts = r.legs.flatMap((l) => l.points.map((p) => ({ lat: p.latitude, lon: p.longitude })));
   const cum = cumulative(pts);
   const instructions = (r.guidance?.instructions || []).map((i) => ({ offset: i.routeOffsetInMeters, message: i.message, maneuver: i.maneuver }));
@@ -340,42 +400,87 @@ async function fetchRoute(from, dest) {
   const span = (x) => ({ from: cum[x.startPointIndex] ?? 0, to: cum[x.endPointIndex] ?? cum[cum.length - 1] });
   const lanes = secs.filter((x) => x.sectionType === "LANES").map((x) => ({ ...span(x), lanes: x.lanes }));
   const limits = secs.filter((x) => x.sectionType === "SPEED_LIMIT").map((x) => ({ ...span(x), kmh: x.maxSpeedLimitInKmh }));
+  const tolls = secs.filter((x) => x.sectionType === "TOLL").length;
   // Cameras on the route line. 60 m, not less: on a ten-lane motorway the camera pole can stand 50 m from the
   // centre of the driver's carriageway (first real drive: one was missed at 47 m).
   const lats = pts.map((p) => p.lat), lons = pts.map((p) => p.lon);
   const box = { s: Math.min(...lats) - 0.001, n: Math.max(...lats) + 0.001, w: Math.min(...lons) - 0.001, e: Math.max(...lons) + 0.001 };
   const camList = state.cameras.filter((c) => c.lat > box.s && c.lat < box.n && c.lon > box.w && c.lon < box.e && locateOnRoute(c, pts, cum).off < 60);
-  return { pts, cum, instructions, lanes, limits, dest, camList, cams: camList.length, summary: { secs: r.summary.travelTimeInSeconds, noTraffic: r.summary.noTrafficTravelTimeInSeconds ?? null, delay: r.summary.trafficDelayInSeconds ?? 0, metres: r.summary.lengthInMeters } };
+  return { pts, cum, instructions, lanes, limits, tolls, incidents: [], dest, camList, cams: camList.length,
+    summary: { secs: r.summary.travelTimeInSeconds, noTraffic: r.summary.noTrafficTravelTimeInSeconds ?? null, delay: r.summary.trafficDelayInSeconds ?? 0, metres: r.summary.lengthInMeters } };
 }
 
-const routeGeo = (route) => (route ? { type: "Feature", geometry: { type: "LineString", coordinates: route.pts.map((p) => [p.lon, p.lat]) }, properties: {} } : { type: "FeatureCollection", features: [] });
+/**
+ * Routes from `from` to `dest`, fastest first. `via` adds a stop on the way (alternatives are not offered then).
+ * `supporting` = points of the route being driven, for the mid-drive "is there something quicker" check.
+ */
+async function fetchRoutes(from, dest, { via = null, alternatives = 0, supporting = null } = {}) {
+  const path = [from, via, dest].filter(Boolean).map((p) => `${p.lat},${p.lon}`).join(":");
+  const j = await tt(`/routing/1/calculateRoute/${path}/json`, routeQuery({ alternatives: via ? 0 : alternatives, better: !!supporting }),
+    supporting ? { supportingPoints: supporting.map((p) => ({ latitude: p.lat, longitude: p.lon })) } : undefined);
+  return j.routes.map((r) => parseRoute(r, dest));
+}
+
+const line = (pts) => pts.map((p) => [p.lon, p.lat]);
+const routeGeo = (route) => (route ? { type: "Feature", geometry: { type: "LineString", coordinates: line(route.pts) }, properties: {} } : { type: "FeatureCollection", features: [] });
+// the routes on offer that are not the chosen one, drawn grey underneath it
+const altsGeo = () => ({ type: "FeatureCollection", features: (state.options || []).filter((o) => o !== state.route).map((o) => ({ type: "Feature", geometry: { type: "LineString", coordinates: line(o.pts) }, properties: {} })) });
 function drawRoute(route) {
   map.getSource("route")?.setData(routeGeo(route));
+  map.getSource("alts")?.setData(altsGeo());
+}
+
+const arriveAt = (secs) => clock(new Date(Date.now() + secs * 1000));
+function routeLine(r) {
+  const s = r.summary;
+  return [`${Math.round(s.secs / 60)} min`, `${(s.metres / 1000).toFixed(1)} km`, `arrive ${arriveAt(s.secs)}`, `traffic +${Math.round(s.delay / 60)} min`,
+    `${r.cams} cameras`, tollNote(r.tolls, new Date())].filter(Boolean).join(" · ");
 }
 
 async function plan(dest) {
   if (!state.pos) { say("No GPS position yet. Route needs your location."); return; }
   // Been here before and parked somewhere else than the map pin? Route to that spot instead.
   const spot = dest.saved ? null : places().find((pl) => pl.name === dest.name && distance(pl, dest) < 3000);
-  if (spot) dest = { ...dest, lat: spot.lat, lon: spot.lon, saved: true };
-  const from = state.pos;
+  if (spot) dest = { ...dest, lat: spot.lat, lon: spot.lon, saved: true, parking: true };
   try {
-    state.route = await fetchRoute(from, dest);
+    state.options = await fetchRoutes(state.pos, dest, { alternatives: 2 });
   } catch (e) { say(`Route failed. ${e.message}`); return; }
-  drawRoute(state.route);
-  const s = state.route.summary;
-  $("plan-name").textContent = dest.name;
-  $("plan-info").textContent = `${Math.round(s.secs / 60)} min · ${(s.metres / 1000).toFixed(1)} km · traffic +${Math.round(s.delay / 60)} min · ${state.route.cams} cameras${dest.saved ? " · your parking spot" : ""}`;
+  $("plan-name").textContent = dest.name + (dest.parking ? " · your parking spot" : "");
+  choose(0);
   $("plan").hidden = false;
   state.follow = false;
   const b = new maplibregl.LngLatBounds();
-  state.route.pts.forEach((p) => b.extend([p.lon, p.lat]));
-  map.fitBounds(b, { padding: { top: 140, bottom: 220, left: 40, right: 40 }, bearing: 0 });
+  state.options.forEach((o) => o.pts.forEach((p) => b.extend([p.lon, p.lat])));
+  map.fitBounds(b, { padding: { top: 140, bottom: 300, left: 40, right: 40 }, bearing: 0 });
+}
+
+// Picks one of the offered routes on the plan card.
+function choose(i) {
+  state.route = state.options[i];
+  drawRoute(state.route);
+  $("plan-info").textContent = routeLine(state.route);
+  const fastest = state.options[0].summary.secs;
+  $("plan-options").replaceChildren(...state.options.map((o, k) => {
+    const b = document.createElement("button");
+    const extra = Math.round((o.summary.secs - fastest) / 60);
+    b.className = k === i ? "on" : "";
+    b.innerHTML = `<strong></strong><span></span>`;
+    b.firstChild.textContent = `${Math.round(o.summary.secs / 60)} min`;
+    b.lastChild.textContent = [k === 0 ? "Fastest" : `+${extra} min`, `${(o.summary.metres / 1000).toFixed(1)} km`, o.tolls ? `${o.tolls} toll` : "no toll", `${o.cams} cam`].join(" · ");
+    b.onclick = () => choose(k);
+    return b;
+  }));
+  $("plan-options").hidden = state.options.length < 2;
 }
 
 function go() {
   const s = state.route.summary;
-  state.drive = { t0: Date.now(), name: state.route.dest.name, predicted: s.secs, noTraffic: s.noTraffic, metres: s.metres, leftM: s.metres, remainingS: s.secs, spoken: new Set(), offCount: 0, lastReroute: 0, reroutes: 0 };
+  state.drive = { t0: Date.now(), name: state.route.dest.name, predicted: s.secs, noTraffic: s.noTraffic, metres: s.metres, leftM: s.metres, remainingS: s.secs,
+    eta: { secs: s.secs, left: s.metres }, // latest traffic-aware time for the road still to drive
+    spoken: new Set(), offCount: 0, lastReroute: 0, lastRefresh: Date.now(), refreshing: false, reroutes: 0, switches: 0, via: null, viaPending: false, stops: 0 };
+  addRecent(state.route.dest);
+  state.options = null;
+  drawRoute(state.route);
   $("plan").hidden = true;
   $("nav").hidden = false;
   $("searchbar").hidden = true;
@@ -383,7 +488,8 @@ function go() {
   $("recenter").hidden = true;
   map.setPadding({ top: 320, bottom: 0, left: 0, right: 0 });
   map.setZoom(Math.max(map.getZoom(), 15.5));
-  say(`Route to ${state.route.dest.name}. ${Math.round(s.secs / 60)} minutes.`);
+  say(`Route to ${state.route.dest.name}. ${Math.round(s.secs / 60)} minutes, arriving ${arriveAt(s.secs)}.`);
+  loadIncidents(state.route, 0);
 }
 
 // Called on arrival and by the End button. Both save the drive; only a mis-tap (under a minute or 500 m) is dropped.
@@ -392,24 +498,70 @@ function endDrive(arrived) {
   const rec = d && driveRecord({ ...d, now: Date.now(), arrived });
   if (rec) {
     if (SIM) rec.simulated = true;
+    if (d.switches) rec.switched_route = d.switches;
+    if (d.stops) rec.stops = d.stops; // a stop makes "predicted vs took" meaningless; kept so it can be filtered out
     const drives = store.get("navlab.drives", []);
     drives.push(rec);
     store.set("navlab.drives", drives);
     const mins = `Predicted ${Math.round(rec.predicted_s / 60)} minutes, took ${Math.round(rec.actual_s / 60)}.`;
     // End pressed near the destination but not on its map pin = this is where the driver parks. Remember it.
-    const parked = !arrived && state.pos && d.leftM < 2000 && d.name !== "Dropped pin" && distance(state.pos, state.route.dest) > 60;
+    const parked = !arrived && state.pos && d.leftM < 2000 && !["Dropped pin", "Home", "Work"].includes(d.name) && distance(state.pos, state.route.dest) > 60;
     if (parked) savePlace(d.name, state.pos);
     say(`${rec.ended_early ? `Drive saved, ended ${sayDist(rec.left_m)} early.` : arrived ? "Arrived." : "Drive saved."} ${mins}${parked ? " Parking spot remembered." : ""}`);
   }
   state.drive = null;
   state.route = null;
+  state.options = null;
   map.setPadding({ top: 0, bottom: 0, left: 0, right: 0 });
   drawRoute(null);
-  $("nav").hidden = true;
-  $("lanes").hidden = true;
-  $("plan").hidden = true;
+  for (const id of ["nav", "lanes", "plan", "stops"]) $(id).hidden = true;
   $("searchbar").hidden = false;
   $("q").value = "";
+}
+
+// Replaces the route being driven (wrong turn, quicker road found, stop added or removed).
+function adopt(route, drive) {
+  state.route = route;
+  drive.eta = { secs: route.summary.secs, left: route.summary.metres };
+  drive.spoken.clear();
+  drive.lastRefresh = Date.now();
+  drawRoute(route);
+  loadIncidents(route, 0);
+}
+
+// Every couple of minutes: ask TomTom how long the road ahead takes now, and whether another road is 2+ minutes quicker.
+async function refreshRoute(alongNow) {
+  const { route, drive } = state;
+  drive.refreshing = true;
+  drive.lastRefresh = Date.now();
+  try {
+    const i0 = Math.max(1, route.cum.findIndex((c) => c >= alongNow));
+    const routes = await fetchRoutes(state.pos, route.dest, { alternatives: 1, supporting: thin([state.pos, ...route.pts.slice(i0)], 120) });
+    if (state.drive !== drive || state.route !== route) return; // the drive ended or changed while waiting
+    const [current, quicker] = routes;
+    const saved = quicker ? current.summary.secs - quicker.summary.secs : 0;
+    if (quicker && saved >= 120) {
+      adopt(quicker, drive);
+      drive.switches++;
+      say(`Faster route found. Saves ${Math.round(saved / 60)} minutes.`);
+    } else {
+      drive.eta = { secs: current.summary.secs, left: current.summary.metres };
+      loadIncidents(route, alongNow);
+    }
+  } catch { /* no signal: keep the old estimate and try again at the next interval */ }
+  drive.refreshing = false;
+}
+
+// Accidents, closures and road works on the route ahead, from TomTom's incident feed. Spoken once each, 2 km before.
+async function loadIncidents(route, fromAlong) {
+  const lats = route.pts.map((p) => p.lat), lons = route.pts.map((p) => p.lon);
+  const box = [Math.min(...lons) - 0.005, Math.min(...lats) - 0.005, Math.max(...lons) + 0.005, Math.max(...lats) + 0.005];
+  if ((box[2] - box[0]) * (box[3] - box[1]) > 0.8) return; // TomTom limits the area of one request (about 10,000 km²)
+  try {
+    const j = await tt("/traffic/services/5/incidentDetails", { bbox: box.join(","), language: "en-GB", timeValidityFilter: "present",
+      fields: "{incidents{type,geometry{type,coordinates},properties{iconCategory}}}" });
+    route.incidents = incidentsOnRoute(j.incidents || [], route.pts, route.cum, fromAlong);
+  } catch { /* feed unavailable: no incident calls this round */ }
 }
 
 async function guide(now) {
@@ -417,9 +569,13 @@ async function guide(now) {
   const loc = locateOnRoute(state.pos, route.pts, route.cum);
   const left = route.summary.metres - loc.along;
   drive.leftM = left;
-  drive.remainingS = (route.summary.secs * left) / route.summary.metres;
+  drive.remainingS = (drive.eta.secs * left) / (drive.eta.left || 1);
 
   if (distance(state.pos, route.dest) < 60 || left < 40) return endDrive(true);
+  if (drive.viaPending && distance(state.pos, drive.via) < 80) {
+    drive.viaPending = false;
+    say(`Stop reached: ${drive.via.name}. Route continues to ${route.dest.name}.`);
+  }
 
   // Off the line for three fixes in a row = a real wrong turn, not GPS jitter. Ask for a new route at most every 15 s.
   drive.offCount = loc.off > 80 ? drive.offCount + 1 : 0;
@@ -427,22 +583,29 @@ async function guide(now) {
     drive.lastReroute = now;
     drive.offCount = 0;
     try {
-      state.route = await fetchRoute(state.pos, route.dest);
+      const [fresh] = await fetchRoutes(state.pos, route.dest, { via: drive.viaPending ? drive.via : null });
+      if (state.drive !== drive) return;
+      adopt(fresh, drive);
       drive.reroutes++;
-      drive.spoken.clear();
-      drawRoute(state.route);
       say("Rerouting.");
     } catch { /* keep the old route; the next fix will try again after the 15 s gap */ }
     return;
   }
+  // traffic re-check; skipped close to the end and while a stop is pending (the stop pins the route)
+  if (!drive.refreshing && !drive.viaPending && left > 1500 && Date.now() - drive.lastRefresh > REFRESH_MS) refreshRoute(loc.along);
 
   const lv = laneView(route.lanes, loc.along);
   $("lanes").hidden = !lv;
   if (lv) $("lanes").replaceChildren(...lv.lanes.map((l) => { const el = document.createElement("span"); el.textContent = l.arrow; if (l.use) el.className = "use"; return el; }));
 
+  for (const inc of route.incidents) {
+    const ahead = inc.along - loc.along;
+    if (ahead > 0 && ahead <= 2000 && !drive.spoken.has(inc.id)) { drive.spoken.add(inc.id); say(`${inc.text} in ${sayDist(ahead)}.`); }
+  }
+
   const next = nextInstruction(route.instructions, loc.along);
-  const etaMin = Math.max(1, Math.round((route.summary.secs * left) / route.summary.metres / 60));
-  $("nav-eta").textContent = `${etaMin} min · ${fmtDist(left)}`;
+  const etaMin = Math.max(1, Math.round(drive.remainingS / 60));
+  $("nav-eta").textContent = `${arriveAt(drive.remainingS)} · ${etaMin} min · ${fmtDist(left)}`;
   if (!next) { $("nav-next").textContent = "Continue to destination"; return; }
   $("nav-next").textContent = `${fmtDist(next.toGo)} · ${next.message}`;
   const id = next.offset;
@@ -453,6 +616,61 @@ async function guide(now) {
     drive.spoken.add(`${id}:soon`);
     say(`In ${sayDist(next.toGo)}, ${next.message.charAt(0).toLowerCase()}${next.message.slice(1)}`);
   }
+}
+
+// ---------- stops on the way ----------
+const STOP_KINDS = [["Petrol", "petrol station"], ["Coffee", "coffee"], ["Food", "restaurant"], ["Shop", "supermarket"], ["Pharmacy", "pharmacy"], ["Mosque", "mosque"]];
+
+function openStops() {
+  const drive = state.drive;
+  $("stops-kinds").replaceChildren(...STOP_KINDS.map(([label, query]) => {
+    const b = document.createElement("button");
+    b.textContent = label;
+    b.onclick = () => findStops(label, query);
+    return b;
+  }));
+  $("stops-list").textContent = drive.viaPending ? `Current stop: ${drive.via.name}` : "Pick what you need. Shows places close to your route.";
+  $("stops-remove").hidden = !drive.viaPending;
+  $("stops").hidden = false;
+}
+
+// Places of one kind that cost at most 15 minutes of detour, nearest along the route first.
+async function findStops(label, query) {
+  const { route, drive } = state;
+  $("stops-list").textContent = `Looking for ${label.toLowerCase()}…`;
+  try {
+    const along = locateOnRoute(state.pos, route.pts, route.cum).along;
+    const i0 = Math.max(1, route.cum.findIndex((c) => c >= along));
+    const j = await tt(`/search/2/searchAlongRoute/${encodeURIComponent(query)}.json`, { maxDetourTime: 900, limit: 8, spreadingMode: "auto" },
+      { route: { points: thin([state.pos, ...route.pts.slice(i0)], 100).map((p) => ({ lat: p.lat, lon: p.lon })) } });
+    if (state.drive !== drive) return;
+    const rows = j.results.map((r) => ({ name: r.poi?.name || label, lat: r.position.lat, lon: r.position.lon, detour: r.detourTime || 0,
+      ahead: locateOnRoute({ lat: r.position.lat, lon: r.position.lon }, route.pts, route.cum).along - along })).filter((r) => r.ahead > 0).sort((a, b) => a.ahead - b.ahead);
+    if (!rows.length) { $("stops-list").textContent = `No ${label.toLowerCase()} close to the route ahead.`; return; }
+    $("stops-list").replaceChildren(...rows.map((r) => {
+      const b = document.createElement("button");
+      b.innerHTML = `<strong></strong><span></span>`;
+      b.firstChild.textContent = r.name;
+      b.lastChild.textContent = `${fmtDist(r.ahead)} ahead · +${Math.max(1, Math.round(r.detour / 60))} min`;
+      b.onclick = () => setStop(r);
+      return b;
+    }));
+  } catch (e) { $("stops-list").textContent = `Search failed. ${e.message}`; }
+}
+
+// Adds (or with null, removes) the stop and re-routes through it.
+async function setStop(stop) {
+  const { route, drive } = state;
+  $("stops").hidden = true;
+  try {
+    const [fresh] = await fetchRoutes(state.pos, route.dest, { via: stop });
+    if (state.drive !== drive) return;
+    drive.via = stop;
+    drive.viaPending = !!stop;
+    if (stop) drive.stops++;
+    adopt(fresh, drive);
+    say(stop ? `Stop added: ${stop.name}. Arriving ${arriveAt(fresh.summary.secs)}.` : "Stop removed.");
+  } catch (e) { say(`Could not change the route. ${e.message}`); }
 }
 
 // ---------- drives log ----------
@@ -524,7 +742,13 @@ function boot() {
 // accepts the bare key or the whole setup link
 $("save-key").onclick = () => { const raw = $("key-input").value.trim(); const v = raw.includes("#key=") ? raw.split("#key=")[1] : raw; if (v) { KEY = v; store.set("navlab.key", v); boot(); } };
 if (!STANDALONE && !SIM) $("start-hint").textContent = "Safari: first Share → Add to Home Screen, then open Drive from the home screen";
-$("start").onclick = () => { $("start").remove(); say("Ready."); keepAwake(); startTracking(); };
+$("start").onclick = () => {
+  $("start").remove();
+  try { audio = new (window.AudioContext || window.webkitAudioContext)(); audio.resume(); } catch { /* no sound system: chimes stay silent */ }
+  say("Ready.");
+  keepAwake();
+  startTracking();
+};
 $("recenter").onclick = () => { state.follow = true; $("recenter").hidden = true; if (state.pos) map.easeTo({ center: [state.pos.lon, state.pos.lat], zoom: 15.5 }); };
 $("theme").onclick = () => setTheme(THEMES[(THEMES.indexOf(theme()) + 1) % THEMES.length].id);
 $("addcam").onclick = addCamera;
@@ -537,10 +761,37 @@ function setVoice(on) {
 }
 $("voice").onclick = () => { setVoice(!state.voice); if (state.voice) say("Voice on."); };
 setVoice(state.voice);
+// Menu: a switch shows its state in its own label.
+function renderMenu() {
+  $("beep").textContent = `Over-limit chime: ${settings.beep ? "on" : "off"}`;
+  $("avoid-tolls").textContent = `Avoid tolls: ${settings.avoidTolls ? "on" : "off"}`;
+  $("avoid-motorways").textContent = `Avoid motorways: ${settings.avoidMotorways ? "on" : "off"}`;
+  for (const [id, on] of [["beep", settings.beep], ["avoid-tolls", settings.avoidTolls], ["avoid-motorways", settings.avoidMotorways]]) $(id).classList.toggle("on", on);
+}
+function flip(key) {
+  settings[key] = !settings[key];
+  store.set("navlab.settings", settings);
+  renderMenu();
+  if (key === "beep" && settings.beep) chime();
+}
+$("more").onclick = () => { renderMenu(); $("menu").hidden = false; };
+$("menu-close").onclick = () => ($("menu").hidden = true);
+$("beep").onclick = () => flip("beep");
+$("avoid-tolls").onclick = () => flip("avoidTolls");
+$("avoid-motorways").onclick = () => flip("avoidMotorways");
+$("reset-quick").onclick = () => { localStorage.removeItem("navlab.home"); localStorage.removeItem("navlab.work"); renderQuick(); say("Home and Work cleared."); };
+$("home").onclick = () => quick("home");
+$("work").onclick = () => quick("work");
+$("set-home").onclick = () => setQuick("home", state.route.dest);
+$("set-work").onclick = () => setQuick("work", state.route.dest);
+$("add-stop").onclick = openStops;
+$("stops-close").onclick = () => ($("stops").hidden = true);
+$("stops-remove").onclick = () => setStop(null);
+renderQuick();
 $("go").onclick = go;
 $("cancel").onclick = () => endDrive(false);
 $("stop").onclick = () => endDrive(false);
-$("log").onclick = showDrives;
+$("log").onclick = () => { $("menu").hidden = true; showDrives(); };
 $("drives-close").onclick = () => ($("drives").hidden = true);
 $("drives-export").onclick = async () => {
   const text = JSON.stringify({ drives: store.get("navlab.drives", []), my_cameras: store.get("navlab.mycams", []), places: places() }, null, 1);
@@ -556,4 +807,4 @@ if ("serviceWorker" in navigator && location.protocol === "https:") {
 }
 $("build").textContent = `version ${BUILD}`;
 boot();
-window.navlab = { state, onFix, plan, go, glide, map: () => map }; // handles for testing from the console
+window.navlab = { state, settings, onFix, plan, go, glide, map: () => map }; // handles for testing from the console

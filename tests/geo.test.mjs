@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { distance, bearing, angleDiff, cameraAhead, CameraAlerts, cumulative, locateOnRoute, nextInstruction, fmtDist, sayDist, driveRecord, pointAt, lerpAngle, laneView, limitAt, parseLimit } from "../geo.js";
+import { distance, bearing, angleDiff, cameraAhead, CameraAlerts, cumulative, locateOnRoute, nextInstruction, fmtDist, sayDist, driveRecord, pointAt, lerpAngle, laneView, limitAt, parseLimit, OverSpeed, darbPeak, tollNote, clock, thin, incidentsOnRoute } from "../geo.js";
 
 const P = { lat: 24.4, lon: 54.5 };
 const north = (m) => ({ lat: P.lat + m / 111195, lon: P.lon });
@@ -121,4 +121,50 @@ test("parseLimit", () => {
   assert.equal(parseLimit("50.00MPH"), 80);
   assert.equal(parseLimit(undefined), null);
   assert.equal(parseLimit("fast"), null);
+});
+
+test("OverSpeed: chimes once on crossing, repeats while over, re-arms under the limit", () => {
+  const o = new OverSpeed({ margin: 2, repeatMs: 15000 });
+  assert.equal(o.check(120, 120, 0), false);
+  assert.equal(o.check(122, 120, 1000), false); // inside the margin
+  assert.equal(o.check(125, 120, 2000), true);
+  assert.equal(o.check(130, 120, 5000), false); // still over, too soon
+  assert.equal(o.check(130, 120, 18000), true); // repeat
+  assert.equal(o.check(110, 120, 19000), false);
+  assert.equal(o.check(125, 120, 20000), true); // re-armed
+  assert.equal(o.check(200, null, 21000), false); // no limit known
+});
+
+test("tolls: Darb peak hours and the note", () => {
+  const at = (iso) => new Date(iso); // local time
+  assert.equal(darbPeak(at("2026-11-24T08:00:00")), true);   // Tuesday morning peak
+  assert.equal(darbPeak(at("2026-11-24T12:00:00")), false);
+  assert.equal(darbPeak(at("2026-11-24T15:00:00")), true);
+  assert.equal(darbPeak(at("2026-11-24T19:00:00")), false);
+  assert.equal(darbPeak(at("2026-11-29T08:00:00")), false);  // Sunday
+  assert.equal(tollNote(0, at("2026-11-24T08:00:00")), "");
+  assert.equal(tollNote(2, at("2026-11-24T08:00:00")), "2 toll gates · about AED 8 now");
+  assert.equal(tollNote(1, at("2026-11-24T12:00:00")), "1 toll gate · bridge gates free now");
+  assert.equal(clock(at("2026-11-24T07:05:00")), "07:05");
+});
+
+test("thin keeps both ends", () => {
+  const a = Array.from({ length: 1000 }, (_, i) => i);
+  const b = thin(a, 120);
+  assert.equal(b.length, 120); assert.equal(b[0], 0); assert.equal(b.at(-1), 999);
+  assert.deepEqual(thin([1, 2, 3], 120), [1, 2, 3]);
+});
+
+test("incidentsOnRoute: on the line, ahead only, no plain queues", () => {
+  const pts = [P, north(5000)];
+  const cum = cumulative(pts);
+  const ll = (p) => [p.lon, p.lat];
+  const inc = (cat, p, type = "Point") => ({ properties: { iconCategory: cat }, geometry: type === "Point" ? { type, coordinates: ll(p) } : { type, coordinates: [ll(p), ll(north(4900))] } });
+  const got = incidentsOnRoute([
+    inc(1, north(3000)), inc(9, north(1500), "LineString"), inc(6, north(2000)), // queue: skipped
+    inc(8, { lat: north(2500).lat, lon: east(400).lon }),                        // 400 m to the side
+    inc(1, north(200)),                                                          // already behind
+  ], pts, cum, 500);
+  assert.deepEqual(got.map((x) => x.text), ["Road works", "Accident"]);
+  assert.ok(Math.abs(got[0].along - 1500) < 5);
 });

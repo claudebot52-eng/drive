@@ -101,7 +101,7 @@ export function locateOnRoute(pos, pts, cum) {
     const len2 = dx * dx + dy * dy;
     const t = len2 === 0 ? 0 : Math.max(0, Math.min(1, -(ax * dx + ay * dy) / len2));
     const off = Math.hypot(ax + t * dx, ay + t * dy);
-    if (off < best.off) best = { off, along: cum[i] + t * Math.sqrt(len2), index: i };
+    if (off < best.off) best = { off, along: cum[i] + t * (cum[i + 1] - cum[i]), index: i }; // true segment length, not the flat one
   }
   return best;
 }
@@ -189,4 +189,60 @@ export function parseLimit(text) {
   if (!m) return null;
   const v = Number(m[1]);
   return Math.round(m[2].toUpperCase() === "MPH" ? v * 1.609344 : v);
+}
+
+/**
+ * Over-speed chime logic. Returns true when a chime is due: on first going more than `margin` km/h over the limit,
+ * then every `repeatMs` while still over. Dropping back under the limit re-arms it.
+ */
+export class OverSpeed {
+  constructor({ margin = 2, repeatMs = 15000 } = {}) { this.margin = margin; this.repeatMs = repeatMs; this.last = null; }
+  check(kmh, limit, now) {
+    if (limit == null || kmh <= limit + this.margin) { this.last = null; return false; }
+    if (this.last != null && now - this.last < this.repeatMs) return false;
+    this.last = now;
+    return true;
+  }
+}
+
+/** Abu Dhabi's four bridge toll gates charge Monday-Saturday 07:00-09:00 and 15:00-19:00 (rule as of 2026). */
+export function darbPeak(date) {
+  const day = date.getDay(), h = date.getHours();
+  return day !== 0 && ((h >= 7 && h < 9) || (h >= 15 && h < 19));
+}
+
+/** Short toll line for a route with n toll gates, or "" for none. AED 4 per charged crossing. */
+export function tollNote(n, date) {
+  if (!n) return "";
+  return `${n} toll gate${n > 1 ? "s" : ""} · ${darbPeak(date) ? `about AED ${4 * n} now` : "bridge gates free now"}`;
+}
+
+/** "14:05" */
+export const clock = (date) => `${String(date.getHours()).padStart(2, "0")}:${String(date.getMinutes()).padStart(2, "0")}`;
+
+/** At most `max` points, evenly thinned, always keeping the first and the last. */
+export function thin(pts, max) {
+  if (pts.length <= max) return pts.slice();
+  const step = (pts.length - 1) / (max - 1);
+  return Array.from({ length: max }, (_, i) => pts[Math.round(i * step)]);
+}
+
+const INCIDENT_NAMES = { 1: "Accident", 2: "Fog", 3: "Danger on the road", 7: "Lane closed", 8: "Road closed", 9: "Road works", 11: "Flooding", 14: "Broken down vehicle" };
+
+/**
+ * Traffic incidents that lie on the route ahead of `fromAlong`, nearest first: [{ id, along, text }].
+ * Plain queues (category 6) are left out: the arrival time already includes them.
+ */
+export function incidentsOnRoute(incidents, pts, cum, fromAlong, maxOff = 50) {
+  const out = [];
+  for (const inc of incidents) {
+    const name = INCIDENT_NAMES[inc.properties?.iconCategory];
+    const g = inc.geometry;
+    if (!name || !g) continue;
+    const c = g.type === "Point" ? g.coordinates : g.coordinates[0];
+    const loc = locateOnRoute({ lat: c[1], lon: c[0] }, pts, cum);
+    if (loc.off > maxOff || loc.along <= fromAlong) continue;
+    out.push({ id: `${inc.properties.iconCategory}:${c[0].toFixed(4)},${c[1].toFixed(4)}`, along: loc.along, text: name });
+  }
+  return out.sort((a, b) => a.along - b.along);
 }

@@ -20,6 +20,7 @@
 
   <div id="searchbar" class="searchbar">
     <input id="q" type="search" placeholder="Where to?" autocomplete="off" autocorrect="off" enterkeyhint="search">
+    <div class="quick"><button id="home" type="button">Home</button><button id="work" type="button">Work</button></div>
     <div id="results" class="results" hidden></div>
     <div id="gps" class="gps" role="status" hidden></div>
   </div>
@@ -27,7 +28,7 @@
   <div id="nav" class="navbar" hidden>
     <div id="nav-next" class="nav-next">Starting…</div>
     <div id="lanes" class="lanes" hidden></div>
-    <div class="nav-row"><span id="nav-eta"></span><button id="stop" type="button">End</button></div>
+    <div class="nav-row"><span id="nav-eta"></span><span class="nav-btns"><button id="add-stop" type="button">+ Stop</button><button id="stop" type="button">End</button></span></div>
   </div>
 
   <div id="cam" class="cam" hidden></div>
@@ -36,9 +37,7 @@
   <div class="side">
     <button id="recenter" type="button" hidden>Recenter</button>
     <button id="addcam" type="button" class="addcam">+ Camera</button>
-    <button id="voice" type="button">Voice on</button>
-    <button id="theme" type="button">Theme</button>
-    <button id="log" type="button">Drives</button>
+    <button id="more" type="button">Menu</button>
   </div>
 
   <div class="speedo"><span id="speed">0</span><small>km/h</small></div>
@@ -47,7 +46,9 @@
   <div id="plan" class="sheet" hidden>
     <div id="plan-name" class="sheet-title"></div>
     <div id="plan-info" class="sheet-info"></div>
+    <div id="plan-options" class="options" hidden></div>
     <div class="sheet-actions"><button id="cancel" type="button" class="ghost">Cancel</button><button id="go" type="button" class="primary">Go</button></div>
+    <div class="sheet-links"><button id="set-home" type="button">Set as Home</button><button id="set-work" type="button">Set as Work</button></div>
   </div>
 
   <div id="drives" class="modal" hidden>
@@ -55,6 +56,29 @@
       <div class="sheet-title">Drives: predicted vs real</div>
       <div id="drives-list" class="drives-list"></div>
       <div class="sheet-actions"><button id="drives-export" type="button" class="ghost">Export</button><button id="drives-close" type="button" class="primary">Close</button></div>
+    </div>
+  </div>
+
+  <div id="menu" class="modal" hidden>
+    <div class="card menu">
+      <div class="sheet-title">Menu</div>
+      <button id="voice" type="button">Voice on</button>
+      <button id="theme" type="button">Theme</button>
+      <button id="beep" type="button">Over-limit chime</button>
+      <button id="avoid-tolls" type="button">Avoid tolls</button>
+      <button id="avoid-motorways" type="button">Avoid motorways</button>
+      <button id="log" type="button">Drives: predicted vs real</button>
+      <button id="reset-quick" type="button">Clear Home and Work</button>
+      <div class="sheet-actions"><button id="menu-close" type="button" class="primary">Close</button></div>
+    </div>
+  </div>
+
+  <div id="stops" class="modal" hidden>
+    <div class="card">
+      <div class="sheet-title">Add a stop</div>
+      <div id="stops-kinds" class="kinds"></div>
+      <div id="stops-list" class="results in-card"></div>
+      <div class="sheet-actions"><button id="stops-remove" type="button" class="ghost" hidden>Remove stop</button><button id="stops-close" type="button" class="primary">Close</button></div>
     </div>
   </div>
 
