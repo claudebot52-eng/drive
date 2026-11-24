@@ -1,6 +1,8 @@
 // navlab drive screen: map, speed, camera warnings, TomTom route + turn voice, drive log.
 import { distance, bearing, cameraAhead, CameraAlerts, cumulative, locateOnRoute, nextInstruction, fmtDist, sayDist, driveRecord, pointAt, lerpAngle, laneView, limitAt, parseLimit } from "./geo.js";
 
+import { sunsetStyle } from "./colors.js";
+
 const $ = (id) => document.getElementById(id);
 const store = {
   get: (k, d) => { try { return JSON.parse(localStorage.getItem(k)) ?? d; } catch { return d; } },
@@ -36,7 +38,7 @@ async function tt(path, query = {}) {
 // ---------- state ----------
 const state = {
   pos: null, heading: null, kmh: 0, lastFix: null,
-  follow: true, theme: store.get("navlab.theme", "night"), voice: store.get("navlab.voice", true), roadLimit: null,
+  follow: true, theme: store.get("navlab.theme", "sunset"), voice: store.get("navlab.voice", true), roadLimit: null,
   cameras: [], alerts: new CameraAlerts(),
   route: null,   // { pts, cum, instructions, summary, dest }
   drive: null,   // active drive: { t0, spoken:Set, offCount, lastReroute, reroutes, ... }
@@ -61,6 +63,9 @@ function say(text) {
 // Each theme = a TomTom vector map style plus a set of screen colours (styles.css, [data-theme]).
 // Vector maps keep street names upright when the map turns with the car, and carry live traffic colours.
 const THEMES = [
+  // Sunset: neon coastal-city-at-dusk look. The dark map is repainted (purple ground, pink roads, teal water);
+  // the route is cyan so it stands out from the pink roads.
+  { id: "sunset", label: "Sunset", map: "2/basic_street-dark-driving", flow: "dark", repaint: sunsetStyle, route: "#3df5ff", casing: "#063a45" },
   { id: "night", label: "Night", map: "2/basic_street-dark-driving", flow: "dark" },
   { id: "day", label: "Day", map: "2/basic_street-light-driving", flow: "light" },
   { id: "neon", label: "Neon", map: "2/basic_street-dark-driving", flow: "dark" },
@@ -84,7 +89,7 @@ async function loadStyle() {
     else if (tf === "{name}\n{sub_text}") layer.layout["text-field"] = ["concat", NAME, "\n", ["coalesce", ["get", "sub_text"], ""]];
     else if (Array.isArray(tf)) layer.layout["text-field"] = swap(tf);
   }
-  return style;
+  return theme().repaint ? theme().repaint(style) : style;
 }
 const ATTRIBUTION = '© TomTom · cameras © OpenStreetMap, <a href="https://mapatlas.eu/tools/speed-camera-map">MapAtlas</a> CC BY 4.0';
 
@@ -93,8 +98,8 @@ function addOverlays() {
   // The route goes above every road but under the street names: before the first layer that draws text.
   const firstLabel = map.getStyle().layers.find((l) => l.type === "symbol" && l.layout?.["text-field"])?.id;
   map.addSource("route", { type: "geojson", data: routeGeo(state.route) });
-  map.addLayer({ id: "route-casing", type: "line", source: "route", paint: { "line-color": "#0b3d91", "line-width": 10 }, layout: { "line-cap": "round", "line-join": "round" } }, firstLabel);
-  map.addLayer({ id: "route", type: "line", source: "route", paint: { "line-color": "#4da3ff", "line-width": 6 }, layout: { "line-cap": "round", "line-join": "round" } }, firstLabel);
+  map.addLayer({ id: "route-casing", type: "line", source: "route", paint: { "line-color": theme().casing || "#0b3d91", "line-width": 10 }, layout: { "line-cap": "round", "line-join": "round" } }, firstLabel);
+  map.addLayer({ id: "route", type: "line", source: "route", paint: { "line-color": theme().route || "#4da3ff", "line-width": 6 }, layout: { "line-cap": "round", "line-join": "round" } }, firstLabel);
   map.addSource("cams", { type: "geojson", data: camGeo(), attribution: ATTRIBUTION });
   // Camera dots. From zoom 13 a camera with a known limit is drawn as a small speed-limit sign with the number in it.
   const known = ["!=", ["get", "limit"], null];

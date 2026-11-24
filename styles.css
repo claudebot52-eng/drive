@@ -66,3 +66,16 @@ body.over .speedo { background: var(--danger); }
 /* road speed limit, drawn like the road sign */
 .limit { position: fixed; left: 112px; bottom: calc(env(safe-area-inset-bottom) + 104px); z-index: 5; width: 58px; height: 58px; border-radius: 50%; background: #fff; color: #111; border: 6px solid #e02020; display: flex; align-items: center; justify-content: center; font-size: 21px; font-weight: 800; font-variant-numeric: tabular-nums; }
 .limit.stale { border-color: #9aa4b1; color: #6b7480; }
+
+/* Sunset: neon dusk. Pink-to-orange bar, purple glass panels, cyan position dot. */
+[data-theme="sunset"] { --bg: #12051f; --panel: rgba(28, 8, 48, 0.9); --text: #fff1fa; --dim: #e3a9d4; --accent: #ff2d95; --on-accent: #fff; --line: #4a1a66; --card: #1c0830; --field: #12051f; --nav: linear-gradient(105deg, #ff2d95 0%, #ff5e62 55%, #ff9a3d 100%); --nav-text: #fff; --nav-dim: #ffe3f1; --ring: #ff2d95; }
+[data-theme="sunset"] .navbar { box-shadow: 0 6px 28px rgba(255, 45, 149, 0.45); }
+[data-theme="sunset"] .nav-next { font-style: italic; letter-spacing: 0.2px; text-shadow: 0 2px 10px rgba(80, 0, 60, 0.55); }
+[data-theme="sunset"] .lanes span.use { background: #fff; color: #e0157c; }
+[data-theme="sunset"] .speedo { background: radial-gradient(circle at 50% 35%, #3a1060 0%, #170628 72%); box-shadow: 0 0 22px rgba(255, 45, 149, 0.55); }
+[data-theme="sunset"] .speedo span { background: linear-gradient(180deg, #fff 20%, #ffb3dc 100%); -webkit-background-clip: text; background-clip: text; color: transparent; font-style: italic; }
+[data-theme="sunset"] .side button:not(.addcam) { border: 1px solid rgba(255, 45, 149, 0.55); }
+[data-theme="sunset"] .searchbar input, [data-theme="sunset"] .sheet, [data-theme="sunset"] .toast, [data-theme="sunset"] .gps { border: 1px solid rgba(255, 45, 149, 0.4); }
+[data-theme="sunset"] .me { background: #3df5ff; box-shadow: 0 0 0 6px rgba(61, 245, 255, 0.28), 0 0 18px #3df5ff; }
+[data-theme="sunset"] .start { background: linear-gradient(180deg, rgba(18, 5, 31, 0.9) 0%, rgba(120, 20, 90, 0.88) 70%, rgba(255, 110, 60, 0.85) 100%); font-style: italic; }
+[data-theme="sunset"] button.primary { background: linear-gradient(105deg, #ff2d95, #ff7a3d); }
