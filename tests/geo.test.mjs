@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { distance, bearing, angleDiff, cameraAhead, CameraAlerts, cumulative, locateOnRoute, nextInstruction, fmtDist, sayDist, driveRecord, pointAt, lerpAngle, laneView, limitAt } from "../geo.js";
+import { distance, bearing, angleDiff, cameraAhead, CameraAlerts, cumulative, locateOnRoute, nextInstruction, fmtDist, sayDist, driveRecord, pointAt, lerpAngle, laneView, limitAt, parseLimit } from "../geo.js";
 
 const P = { lat: 24.4, lon: 54.5 };
 const north = (m) => ({ lat: P.lat + m / 111195, lon: P.lon });
@@ -113,4 +113,12 @@ test("limitAt", () => {
   assert.equal(limitAt(limits, 2300), null); // gap in the data
   assert.equal(limitAt(limits, 2999), 80);
   assert.equal(limitAt(limits, 9999), null);
+});
+
+test("parseLimit", () => {
+  assert.equal(parseLimit("140.00KPH"), 140);
+  assert.equal(parseLimit("40.00KPH"), 40);
+  assert.equal(parseLimit("50.00MPH"), 80);
+  assert.equal(parseLimit(undefined), null);
+  assert.equal(parseLimit("fast"), null);
 });

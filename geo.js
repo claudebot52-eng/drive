@@ -182,3 +182,11 @@ export function limitAt(limits, along) {
   for (const l of limits) if (along >= l.from && along < l.to) return l.kmh;
   return null;
 }
+
+/** "140.00KPH" (or MPH) from TomTom reverse geocoding -> km/h as a whole number, or null. */
+export function parseLimit(text) {
+  const m = /^([\d.]+)\s*(KPH|MPH)$/i.exec(text || "");
+  if (!m) return null;
+  const v = Number(m[1]);
+  return Math.round(m[2].toUpperCase() === "MPH" ? v * 1.609344 : v);
+}

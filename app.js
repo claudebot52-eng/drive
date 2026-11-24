@@ -1,5 +1,5 @@
 // navlab drive screen: map, speed, camera warnings, TomTom route + turn voice, drive log.
-import { distance, bearing, cameraAhead, CameraAlerts, cumulative, locateOnRoute, nextInstruction, fmtDist, sayDist, driveRecord, pointAt, lerpAngle, laneView, limitAt } from "./geo.js";
+import { distance, bearing, cameraAhead, CameraAlerts, cumulative, locateOnRoute, nextInstruction, fmtDist, sayDist, driveRecord, pointAt, lerpAngle, laneView, limitAt, parseLimit } from "./geo.js";
 
 const $ = (id) => document.getElementById(id);
 const store = {
@@ -96,7 +96,17 @@ function addOverlays() {
   map.addLayer({ id: "route-casing", type: "line", source: "route", paint: { "line-color": "#0b3d91", "line-width": 10 }, layout: { "line-cap": "round", "line-join": "round" } }, firstLabel);
   map.addLayer({ id: "route", type: "line", source: "route", paint: { "line-color": "#4da3ff", "line-width": 6 }, layout: { "line-cap": "round", "line-join": "round" } }, firstLabel);
   map.addSource("cams", { type: "geojson", data: camGeo(), attribution: ATTRIBUTION });
-  map.addLayer({ id: "cams", type: "circle", source: "cams", minzoom: 9, paint: { "circle-radius": ["interpolate", ["linear"], ["zoom"], 9, 2, 15, 7], "circle-color": ["case", ["get", "mine"], "#ff4fd8", "#ff9f1a"], "circle-stroke-color": "#111", "circle-stroke-width": 1.5 } });
+  // Camera dots. From zoom 13 a camera with a known limit is drawn as a small speed-limit sign with the number in it.
+  const known = ["!=", ["get", "limit"], null];
+  map.addLayer({ id: "cams", type: "circle", source: "cams", minzoom: 9, paint: {
+    "circle-radius": ["interpolate", ["linear"], ["zoom"], 9, 2, 12.9, 5, 13, ["case", known, 11, 6], 16, ["case", known, 15, 8]],
+    "circle-color": ["step", ["zoom"], ["case", ["get", "mine"], "#ff4fd8", "#ff9f1a"], 13, ["case", ["get", "mine"], "#ff4fd8", known, "#ffffff", "#ff9f1a"]],
+    "circle-stroke-color": ["step", ["zoom"], "#111", 13, ["case", known, "#e02020", "#111"]],
+    "circle-stroke-width": ["step", ["zoom"], 1.5, 13, ["case", known, 3, 1.5]] } });
+  const font = map.getStyle().layers.find((l) => l.layout?.["text-font"])?.layout["text-font"];
+  if (font) map.addLayer({ id: "cam-limits", type: "symbol", source: "cams", minzoom: 13, filter: ["!=", ["get", "limit"], null],
+    layout: { "text-field": ["to-string", ["get", "limit"]], "text-font": font, "text-size": ["interpolate", ["linear"], ["zoom"], 13, 10, 16, 14], "text-allow-overlap": true, "text-ignore-placement": true },
+    paint: { "text-color": "#111" } });
 }
 
 async function initMap() {
@@ -136,7 +146,7 @@ function setTheme(id) {
   if (map) loadStyle().then((style) => map.setStyle(style, { diff: false })).catch((e) => say(`Theme failed to load. ${e.message}`));
 }
 
-const camGeo = () => ({ type: "FeatureCollection", features: state.cameras.map((c) => ({ type: "Feature", geometry: { type: "Point", coordinates: [c.lon, c.lat] }, properties: { mine: !!c.mine } })) });
+const camGeo = () => ({ type: "FeatureCollection", features: state.cameras.map((c) => ({ type: "Feature", geometry: { type: "Point", coordinates: [c.lon, c.lat] }, properties: { mine: !!c.mine, limit: c.limit ?? null } })) });
 
 // One tap while passing a camera the list does not know. Saved on the phone, used from the next pass on.
 function addCamera() {
@@ -204,12 +214,32 @@ function onFix(lat, lon, speedMs, hdg, t = Date.now()) {
   if (!prev) { meMarker.setLngLat([lon, lat]).addTo(map); gps("ok"); map.jumpTo({ center: [lon, lat], zoom: 15 }); }
   glideTo(show);
   $("speed").textContent = Math.round(state.kmh);
-  // road speed limit: known only while navigating (it comes with the route)
-  state.roadLimit = state.drive && state.route ? limitAt(state.route.limits, locateOnRoute(pos, state.route.pts, state.route.cum).along) : null;
+  // Road speed limit. On a route it comes with the route. Otherwise TomTom is asked for the road under the car.
+  if (state.drive && state.route) state.roadLimit = limitAt(state.route.limits, locateOnRoute(pos, state.route.pts, state.route.cum).along);
+  else { lookupLimit(pos, t); state.roadLimit = freeLimit.kmh != null && t - freeLimit.t < 45000 ? freeLimit.kmh : null; }
   $("limit").hidden = state.roadLimit == null;
   if (state.roadLimit != null) $("limit").textContent = state.roadLimit;
   checkCameras(t);
   if (state.drive) guide(t);
+}
+
+// Speed limit while driving without a route: one small lookup per 250 m (or 12 s), only when actually moving.
+// A 30-minute drive costs about 100 of the 2,500 free daily requests.
+const freeLimit = { kmh: null, t: 0, at: null, busy: false, asked: 0 };
+async function lookupLimit(pos, now) {
+  if (freeLimit.busy || state.kmh < 15 || now - freeLimit.asked < 8000) return;
+  if (freeLimit.at && distance(freeLimit.at, pos) < 250 && now - freeLimit.asked < 12000) return;
+  freeLimit.busy = true;
+  freeLimit.asked = now;
+  freeLimit.at = pos;
+  try {
+    const q = { returnSpeedLimit: "true", radius: 40 };
+    if (state.heading != null) q.heading = Math.round(state.heading); // picks the right carriageway
+    const j = await tt(`/search/2/reverseGeocode/${pos.lat},${pos.lon}.json`, q);
+    const kmh = parseLimit(j.addresses?.[0]?.address?.speedLimit);
+    if (kmh != null) { freeLimit.kmh = kmh; freeLimit.t = now; } // same clock as the fixes
+  } catch { /* no signal or quota: the sign simply disappears after 45 s */ }
+  freeLimit.busy = false;
 }
 
 function checkCameras(now) {
