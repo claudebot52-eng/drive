@@ -1,5 +1,5 @@
 // navlab drive screen: map, speed, camera warnings, TomTom route + turn voice, drive log.
-import { distance, bearing, cameraAhead, CameraAlerts, cumulative, locateOnRoute, nextInstruction, fmtDist, sayDist, driveRecord, pointAt, lerpAngle } from "./geo.js";
+import { distance, bearing, cameraAhead, CameraAlerts, cumulative, locateOnRoute, nextInstruction, fmtDist, sayDist, driveRecord, pointAt, lerpAngle, laneView, limitAt } from "./geo.js";
 
 const $ = (id) => document.getElementById(id);
 const store = {
@@ -10,7 +10,9 @@ const BUILD = "202611241303"; // stamped by deploy.sh
 const params = new URLSearchParams(location.search);
 const SIM = params.has("sim");
 const SIM_KMH = Number(params.get("kmh")) || 110;
-const SIM_START = { lat: 24.3665244, lon: 54.5647253 };
+// test mode start point: ?from=lat,lon or the university
+const [simLat, simLon] = (params.get("from") || "24.3665244,54.5647253").split(",").map(Number);
+const SIM_START = { lat: simLat, lon: simLon };
 
 // ---------- key ----------
 // A setup link carries the key after "#key=": the fragment never leaves the phone.
@@ -25,7 +27,8 @@ let KEY = store.get("navlab.key", "");
 
 const TT = "https://api.tomtom.com";
 async function tt(path, query = {}) {
-  const res = await fetch(`${TT}${path}?${new URLSearchParams({ key: KEY, ...query })}`);
+  const pairs = Array.isArray(query) ? query : Object.entries(query); // an array of pairs allows a key twice
+  const res = await fetch(`${TT}${path}?${new URLSearchParams([["key", KEY], ...pairs])}`);
   if (!res.ok) throw new Error(`TomTom ${res.status}`);
   return res.json();
 }
@@ -33,7 +36,7 @@ async function tt(path, query = {}) {
 // ---------- state ----------
 const state = {
   pos: null, heading: null, kmh: 0, lastFix: null,
-  follow: true, night: store.get("navlab.night", true), voice: store.get("navlab.voice", true),
+  follow: true, theme: store.get("navlab.theme", "night"), voice: store.get("navlab.voice", true), roadLimit: null,
   cameras: [], alerts: new CameraAlerts(),
   route: null,   // { pts, cum, instructions, summary, dest }
   drive: null,   // active drive: { t0, spoken:Set, offCount, lastReroute, reroutes, ... }
@@ -54,18 +57,54 @@ function say(text) {
   speechSynthesis.speak(u);
 }
 
-// ---------- map ----------
-const tileUrl = () => `${TT}/map/1/tile/basic/${state.night ? "night" : "main"}/{z}/{x}/{y}.png?tileSize=512&language=en-GB&key=${KEY}`;
+// ---------- map and themes ----------
+// Each theme = a TomTom vector map style plus a set of screen colours (styles.css, [data-theme]).
+// Vector maps keep street names upright when the map turns with the car, and carry live traffic colours.
+const THEMES = [
+  { id: "night", label: "Night", map: "2/basic_street-dark-driving", flow: "dark" },
+  { id: "day", label: "Day", map: "2/basic_street-light-driving", flow: "light" },
+  { id: "neon", label: "Neon", map: "2/basic_street-dark-driving", flow: "dark" },
+  { id: "sat", label: "Satellite", map: "2/basic_street-satellite", flow: "dark" },
+];
+const theme = () => THEMES.find((t) => t.id === state.theme) || THEMES[0];
+const styleUrl = () => `${TT}/style/1/style/22.2.1-*?key=${KEY}&map=${theme().map}&traffic_flow=2/flow_relative-${theme().flow}`;
+// TomTom's style file is fetched by hand so it can be repaired before the map sees it: it contains a colour
+// written as "hsl(160, 43%, 24%%)", which MapLibre rejects, refusing the whole map.
+async function loadStyle() {
+  const res = await fetch(styleUrl());
+  if (!res.ok) throw new Error(`TomTom style ${res.status}`);
+  const style = JSON.parse((await res.text()).replaceAll("%%)", "%)"));
+  // Street names: the tiles carry the local (Arabic) name in "name" and translations beside it. Prefer English,
+  // then the Latin-script spelling, then whatever exists. MapLibre also cannot shape Arabic without an extra plugin.
+  const NAME = ["coalesce", ["get", "name_en-GB"], ["get", "name_ngt-Latn"], ["get", "name"]];
+  const swap = (v) => (Array.isArray(v) ? (v.length === 2 && v[0] === "get" && v[1] === "name" ? NAME : v.map(swap)) : v);
+  for (const layer of style.layers) {
+    const tf = layer.layout?.["text-field"];
+    if (tf === "{name}") layer.layout["text-field"] = NAME;
+    else if (tf === "{name}\n{sub_text}") layer.layout["text-field"] = ["concat", NAME, "\n", ["coalesce", ["get", "sub_text"], ""]];
+    else if (Array.isArray(tf)) layer.layout["text-field"] = swap(tf);
+  }
+  return style;
+}
+const ATTRIBUTION = '© TomTom · cameras © OpenStreetMap, <a href="https://mapatlas.eu/tools/speed-camera-map">MapAtlas</a> CC BY 4.0';
 
-function initMap() {
+// Our own layers sit on top of the TomTom style. A theme change replaces the whole style, so they are re-added each time.
+function addOverlays() {
+  // The route goes above every road but under the street names: before the first layer that draws text.
+  const firstLabel = map.getStyle().layers.find((l) => l.type === "symbol" && l.layout?.["text-field"])?.id;
+  map.addSource("route", { type: "geojson", data: routeGeo(state.route) });
+  map.addLayer({ id: "route-casing", type: "line", source: "route", paint: { "line-color": "#0b3d91", "line-width": 10 }, layout: { "line-cap": "round", "line-join": "round" } }, firstLabel);
+  map.addLayer({ id: "route", type: "line", source: "route", paint: { "line-color": "#4da3ff", "line-width": 6 }, layout: { "line-cap": "round", "line-join": "round" } }, firstLabel);
+  map.addSource("cams", { type: "geojson", data: camGeo(), attribution: ATTRIBUTION });
+  map.addLayer({ id: "cams", type: "circle", source: "cams", minzoom: 9, paint: { "circle-radius": ["interpolate", ["linear"], ["zoom"], 9, 2, 15, 7], "circle-color": ["case", ["get", "mine"], "#ff4fd8", "#ff9f1a"], "circle-stroke-color": "#111", "circle-stroke-width": 1.5 } });
+}
+
+async function initMap() {
+  document.documentElement.dataset.theme = theme().id;
+  let style;
+  try { style = await loadStyle(); } catch (e) { say(`Map failed to load. ${e.message}`); return; }
   map = new maplibregl.Map({
-    container: "map",
-    style: {
-      version: 8,
-      sources: { base: { type: "raster", tiles: [tileUrl()], tileSize: 512, attribution: '© TomTom · cameras © OpenStreetMap, <a href="https://mapatlas.eu/tools/speed-camera-map">MapAtlas</a> CC BY 4.0' } },
-      layers: [{ id: "base", type: "raster", source: "base" }],
-    },
-    center: [54.45, 24.42], zoom: 9, attributionControl: { compact: true },
+    container: "map", style, center: [54.45, 24.42], zoom: 9, attributionControl: { compact: true },
   });
   map.on("dragstart", () => { state.follow = false; $("recenter").hidden = false; });
   // Hold a finger on the map for a moment to route to that exact spot (a car park, a gate).
@@ -75,21 +114,26 @@ function initMap() {
   map.on("touchstart", (e) => { cancelPress(); if (e.originalEvent.touches.length === 1) press = setTimeout(() => pin(e.lngLat), 650); });
   for (const ev of ["touchend", "touchcancel", "dragstart", "zoomstart"]) map.on(ev, cancelPress);
   map.on("contextmenu", (e) => pin(e.lngLat));
-  map.on("load", async () => {
-    map.addSource("route", { type: "geojson", data: { type: "FeatureCollection", features: [] } });
-    map.addLayer({ id: "route-casing", type: "line", source: "route", paint: { "line-color": "#0b3d91", "line-width": 9 }, layout: { "line-cap": "round", "line-join": "round" } });
-    map.addLayer({ id: "route", type: "line", source: "route", paint: { "line-color": "#4da3ff", "line-width": 5 }, layout: { "line-cap": "round", "line-join": "round" } });
+  map.on("style.load", addOverlays);
+  map.once("load", async () => {
     const data = await (await fetch("./cameras.json")).json();
     state.cameras = data.cameras.map((c) => ({ lat: c.lat, lon: c.lon, limit: Number.parseInt(c.maxspeed, 10) || null, light: c.kind === "light" }));
     // cameras the driver added by hand live on the phone and join the same list
     state.cameras.push(...store.get("navlab.mycams", []).map((c) => ({ lat: c.lat, lon: c.lon, limit: null, mine: true })));
-    map.addSource("cams", { type: "geojson", data: camGeo() });
-    map.addLayer({ id: "cams", type: "circle", source: "cams", minzoom: 9, paint: { "circle-radius": ["interpolate", ["linear"], ["zoom"], 9, 2, 15, 7], "circle-color": ["case", ["get", "mine"], "#ff4fd8", "#ff9f1a"], "circle-stroke-color": "#111", "circle-stroke-width": 1.5 } });
+    map.getSource("cams")?.setData(camGeo());
     document.body.dataset.ready = "1";
   });
   const el = document.createElement("div");
   el.className = "me";
   meMarker = new maplibregl.Marker({ element: el, rotationAlignment: "map" }); // added to the map on the first fix
+}
+
+function setTheme(id) {
+  state.theme = id;
+  store.set("navlab.theme", id);
+  document.documentElement.dataset.theme = id;
+  $("theme").textContent = `Theme: ${theme().label}`;
+  if (map) loadStyle().then((style) => map.setStyle(style, { diff: false })).catch((e) => say(`Theme failed to load. ${e.message}`));
 }
 
 const camGeo = () => ({ type: "FeatureCollection", features: state.cameras.map((c) => ({ type: "Feature", geometry: { type: "Point", coordinates: [c.lon, c.lat] }, properties: { mine: !!c.mine } })) });
@@ -106,13 +150,6 @@ function addCamera() {
   state.alerts.state.set(state.alerts.key(c), { stage: "done", until: Date.now() + state.alerts.cooldownMs }); // no warning for the one just passed
   map.getSource("cams").setData(camGeo());
   say(`Camera saved. ${mine.length} of your own.`);
-}
-
-function setNight(on) {
-  state.night = on;
-  store.set("navlab.night", on);
-  map.getSource("base").setTiles([tileUrl()]);
-  $("night").textContent = on ? "Day" : "Night";
 }
 
 // ---------- smooth display ----------
@@ -167,6 +204,10 @@ function onFix(lat, lon, speedMs, hdg, t = Date.now()) {
   if (!prev) { meMarker.setLngLat([lon, lat]).addTo(map); gps("ok"); map.jumpTo({ center: [lon, lat], zoom: 15 }); }
   glideTo(show);
   $("speed").textContent = Math.round(state.kmh);
+  // road speed limit: known only while navigating (it comes with the route)
+  state.roadLimit = state.drive && state.route ? limitAt(state.route.limits, locateOnRoute(pos, state.route.pts, state.route.cum).along) : null;
+  $("limit").hidden = state.roadLimit == null;
+  if (state.roadLimit != null) $("limit").textContent = state.roadLimit;
   checkCameras(t);
   if (state.drive) guide(t);
 }
@@ -177,12 +218,13 @@ function checkCameras(now) {
   // While navigating, only cameras on the route line count, so side streets stay quiet.
   const pool = state.drive ? state.route.camList : state.cameras;
   const hit = state.kmh >= 15 && state.heading != null ? cameraAhead(state.pos, state.heading, pool) : null;
-  if (!hit) { chip.hidden = true; document.body.classList.remove("over"); return; }
-  const limit = hit.camera.limit;
-  const over = limit != null && state.kmh > limit;
+  const overRoad = state.roadLimit != null && state.kmh > state.roadLimit;
+  if (!hit) { chip.hidden = true; document.body.classList.toggle("over", overRoad); return; }
+  const limit = hit.camera.limit ?? state.roadLimit; // a camera without its own limit takes the road's
+  const over = (limit != null && state.kmh > limit) || overRoad;
   chip.hidden = false;
   const what = hit.camera.light ? "Red light camera" : "Camera";
-  chip.textContent = `${what} ${fmtDist(hit.dist)}${limit ? ` · limit ${limit}` : ""}`;
+  chip.textContent = `${hit.camera.light ? "Red light cam" : "Camera"} ${fmtDist(hit.dist)}${limit ? ` · ${limit}` : ""}`;
   document.body.classList.toggle("over", over);
   const stage = state.alerts.check(hit, now);
   if (stage === "far") say(`${hit.camera.light ? "Red light camera" : "Speed camera"} ahead, ${sayDist(hit.dist)}.${limit ? ` Limit ${limit}.` : ""}`);
@@ -241,20 +283,27 @@ async function search(q) {
 // ---------- route ----------
 async function fetchRoute(from, dest) {
   const j = await tt(`/routing/1/calculateRoute/${from.lat},${from.lon}:${dest.lat},${dest.lon}/json`,
-    { traffic: "true", travelMode: "car", routeType: "fastest", instructionsType: "text", language: "en-GB", computeTravelTimeFor: "all" });
+    [["traffic", "true"], ["travelMode", "car"], ["routeType", "fastest"], ["instructionsType", "text"], ["language", "en-GB"],
+      ["computeTravelTimeFor", "all"], ["sectionType", "lanes"], ["sectionType", "speedLimit"]]);
   const r = j.routes[0];
   const pts = r.legs.flatMap((l) => l.points.map((p) => ({ lat: p.latitude, lon: p.longitude })));
   const cum = cumulative(pts);
   const instructions = (r.guidance?.instructions || []).map((i) => ({ offset: i.routeOffsetInMeters, message: i.message, maneuver: i.maneuver }));
-  // cameras that sit on the route line (within 35 m)
+  const secs = r.sections || [];
+  const span = (x) => ({ from: cum[x.startPointIndex] ?? 0, to: cum[x.endPointIndex] ?? cum[cum.length - 1] });
+  const lanes = secs.filter((x) => x.sectionType === "LANES").map((x) => ({ ...span(x), lanes: x.lanes }));
+  const limits = secs.filter((x) => x.sectionType === "SPEED_LIMIT").map((x) => ({ ...span(x), kmh: x.maxSpeedLimitInKmh }));
+  // Cameras on the route line. 60 m, not less: on a ten-lane motorway the camera pole can stand 50 m from the
+  // centre of the driver's carriageway (first real drive: one was missed at 47 m).
   const lats = pts.map((p) => p.lat), lons = pts.map((p) => p.lon);
   const box = { s: Math.min(...lats) - 0.001, n: Math.max(...lats) + 0.001, w: Math.min(...lons) - 0.001, e: Math.max(...lons) + 0.001 };
-  const camList = state.cameras.filter((c) => c.lat > box.s && c.lat < box.n && c.lon > box.w && c.lon < box.e && locateOnRoute(c, pts, cum).off < 35);
-  return { pts, cum, instructions, dest, camList, cams: camList.length, summary: { secs: r.summary.travelTimeInSeconds, noTraffic: r.summary.noTrafficTravelTimeInSeconds ?? null, delay: r.summary.trafficDelayInSeconds ?? 0, metres: r.summary.lengthInMeters } };
+  const camList = state.cameras.filter((c) => c.lat > box.s && c.lat < box.n && c.lon > box.w && c.lon < box.e && locateOnRoute(c, pts, cum).off < 60);
+  return { pts, cum, instructions, lanes, limits, dest, camList, cams: camList.length, summary: { secs: r.summary.travelTimeInSeconds, noTraffic: r.summary.noTrafficTravelTimeInSeconds ?? null, delay: r.summary.trafficDelayInSeconds ?? 0, metres: r.summary.lengthInMeters } };
 }
 
+const routeGeo = (route) => (route ? { type: "Feature", geometry: { type: "LineString", coordinates: route.pts.map((p) => [p.lon, p.lat]) }, properties: {} } : { type: "FeatureCollection", features: [] });
 function drawRoute(route) {
-  map.getSource("route").setData(route ? { type: "Feature", geometry: { type: "LineString", coordinates: route.pts.map((p) => [p.lon, p.lat]) }, properties: {} } : { type: "FeatureCollection", features: [] });
+  map.getSource("route")?.setData(routeGeo(route));
 }
 
 async function plan(dest) {
@@ -310,6 +359,8 @@ function endDrive(arrived) {
   map.setPadding({ top: 0, bottom: 0, left: 0, right: 0 });
   drawRoute(null);
   $("nav").hidden = true;
+  $("lanes").hidden = true;
+  $("limit").hidden = true;
   $("plan").hidden = true;
   $("searchbar").hidden = false;
   $("q").value = "";
@@ -338,6 +389,10 @@ async function guide(now) {
     } catch { /* keep the old route; the next fix will try again after the 15 s gap */ }
     return;
   }
+
+  const lv = laneView(route.lanes, loc.along);
+  $("lanes").hidden = !lv;
+  if (lv) $("lanes").replaceChildren(...lv.lanes.map((l) => { const el = document.createElement("span"); el.textContent = l.arrow; if (l.use) el.className = "use"; return el; }));
 
   const next = nextInstruction(route.instructions, loc.along);
   const etaMin = Math.max(1, Math.round((route.summary.secs * left) / route.summary.metres / 60));
@@ -417,7 +472,7 @@ function boot() {
   if (!KEY) { $("setup").hidden = false; return; }
   $("setup").hidden = true;
   initMap();
-  $("night").textContent = state.night ? "Day" : "Night";
+  $("theme").textContent = `Theme: ${theme().label}`;
 }
 
 // accepts the bare key or the whole setup link
@@ -425,7 +480,7 @@ $("save-key").onclick = () => { const raw = $("key-input").value.trim(); const v
 if (!STANDALONE && !SIM) $("start-hint").textContent = "Safari: first Share → Add to Home Screen, then open Drive from the home screen";
 $("start").onclick = () => { $("start").remove(); say("Ready."); keepAwake(); startTracking(); };
 $("recenter").onclick = () => { state.follow = true; $("recenter").hidden = true; if (state.pos) map.easeTo({ center: [state.pos.lon, state.pos.lat], zoom: 15.5 }); };
-$("night").onclick = () => setNight(!state.night);
+$("theme").onclick = () => setTheme(THEMES[(THEMES.indexOf(theme()) + 1) % THEMES.length].id);
 $("addcam").onclick = addCamera;
 function setVoice(on) {
   state.voice = on;

@@ -1,29 +1,32 @@
-:root { --bg: #0b0d10; --panel: rgba(14, 17, 22, 0.92); --text: #f3f5f7; --dim: #9aa4b1; --accent: #4da3ff; --warn: #ff9f1a; --danger: #ff3b30; --r: 18px; }
+:root { --bg: #0b0d10; --panel: rgba(14, 17, 22, 0.92); --text: #f3f5f7; --dim: #9aa4b1; --accent: #4da3ff; --on-accent: #04121f; --warn: #ff9f1a; --danger: #ff3b30; --line: #232a33; --card: #14181e; --field: #0b0d10; --nav: #0b3d91; --nav-text: #fff; --nav-dim: #d6e6ff; --ring: #2b333d; --r: 18px; }
+[data-theme="day"] { --bg: #eef1f5; --panel: rgba(255, 255, 255, 0.95); --text: #10151c; --dim: #586474; --accent: #0a66d8; --on-accent: #fff; --line: #d9dee5; --card: #fff; --field: #f3f5f8; --nav: #0a56b8; --ring: #c5ccd6; }
+[data-theme="neon"] { --bg: #000; --panel: rgba(0, 0, 0, 0.92); --text: #eafff2; --dim: #7fb79a; --accent: #39ff88; --on-accent: #00210f; --line: #123222; --card: #050a07; --field: #000; --nav: #000; --nav-text: #39ff88; --nav-dim: #9be8bd; --ring: #39ff88; }
 * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
 html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text); font: 17px/1.3 -apple-system, system-ui, sans-serif; overflow: hidden; overscroll-behavior: none; }
 #map { position: fixed; inset: 0; }
 button { font: inherit; color: inherit; border: 0; border-radius: 14px; background: var(--panel); padding: 12px 16px; min-height: 48px; }
-button.primary { background: var(--accent); color: #04121f; font-weight: 700; }
-button.ghost { background: #232a33; }
+button.primary { background: var(--accent); color: var(--on-accent); font-weight: 700; }
+button.ghost { background: var(--line); }
 [hidden] { display: none !important; }
 
 .searchbar { position: fixed; top: calc(env(safe-area-inset-top) + 10px); left: 12px; right: 12px; z-index: 5; }
 .searchbar input { width: 100%; height: 54px; border: 0; border-radius: var(--r); padding: 0 18px; font: inherit; font-size: 19px; background: var(--panel); color: var(--text); outline: none; }
 .results { margin-top: 8px; background: var(--panel); border-radius: var(--r); overflow: hidden; }
-.results button { display: block; width: 100%; text-align: left; background: none; border-radius: 0; border-bottom: 1px solid #232a33; padding: 12px 18px; }
+.results button { display: block; width: 100%; text-align: left; background: none; border-radius: 0; border-bottom: 1px solid var(--line); padding: 12px 18px; }
 .results button span { display: block; color: var(--dim); font-size: 14px; }
 
-.navbar { position: fixed; top: calc(env(safe-area-inset-top) + 10px); left: 12px; right: 12px; z-index: 5; background: #0b3d91; border-radius: var(--r); padding: 14px 16px; }
+.navbar { position: fixed; top: calc(env(safe-area-inset-top) + 10px); left: 12px; right: 12px; z-index: 5; background: var(--nav); color: var(--nav-text); border-radius: var(--r); padding: 14px 16px; }
+[data-theme="neon"] .navbar { border: 2px solid var(--accent); }
 .nav-next { font-size: 24px; font-weight: 700; line-height: 1.2; }
-.nav-row { display: flex; justify-content: space-between; align-items: center; margin-top: 8px; color: #d6e6ff; }
-.nav-row button { background: rgba(0, 0, 0, 0.3); min-height: 40px; padding: 8px 16px; }
+.nav-row { display: flex; justify-content: space-between; align-items: center; margin-top: 8px; color: var(--nav-dim); }
+.nav-row button { background: rgba(0, 0, 0, 0.3); color: inherit; min-height: 40px; padding: 8px 16px; }
 
-.cam { position: fixed; left: 50%; transform: translateX(-50%); bottom: calc(env(safe-area-inset-bottom) + 296px); z-index: 4; background: var(--warn); color: #201200; font-weight: 800; font-size: 22px; padding: 12px 20px; border-radius: 999px; white-space: nowrap; }
+.cam { position: fixed; left: 14px; bottom: calc(env(safe-area-inset-bottom) + 178px); z-index: 4; background: var(--warn); color: #201200; font-weight: 800; font-size: 20px; padding: 11px 18px; border-radius: 999px; white-space: nowrap; }
 body.over .cam { background: var(--danger); color: #fff; }
 body.over .speedo { background: var(--danger); }
-.toast { position: fixed; left: 12px; right: 12px; bottom: calc(env(safe-area-inset-bottom) + 362px); z-index: 4; background: var(--panel); border-radius: 14px; padding: 10px 14px; text-align: center; color: var(--dim); font-size: 15px; }
+.toast { position: fixed; left: 12px; right: 12px; bottom: calc(env(safe-area-inset-bottom) + 350px); z-index: 4; background: var(--panel); border-radius: 14px; padding: 10px 14px; text-align: center; color: var(--dim); font-size: 15px; }
 
-.speedo { position: fixed; left: 14px; bottom: calc(env(safe-area-inset-bottom) + 18px); z-index: 4; width: 118px; height: 118px; border-radius: 50%; background: var(--panel); display: flex; flex-direction: column; align-items: center; justify-content: center; border: 3px solid #2b333d; }
+.speedo { position: fixed; left: 14px; bottom: calc(env(safe-area-inset-bottom) + 18px); z-index: 4; width: 118px; height: 118px; border-radius: 50%; background: var(--panel); display: flex; flex-direction: column; align-items: center; justify-content: center; border: 3px solid var(--ring); }
 .speedo span { font-size: 50px; font-weight: 800; line-height: 1; font-variant-numeric: tabular-nums; }
 .speedo small { color: var(--dim); font-size: 13px; }
 
@@ -36,10 +39,10 @@ body.over .speedo { background: var(--danger); }
 .sheet-actions button { flex: 1; min-height: 54px; font-size: 19px; }
 
 .modal { position: fixed; inset: 0; z-index: 9; background: rgba(0, 0, 0, 0.6); display: flex; align-items: center; justify-content: center; padding: 16px; }
-.card { background: #14181e; border-radius: var(--r); padding: 18px; width: 100%; max-width: 480px; max-height: 80vh; display: flex; flex-direction: column; }
-.card input { width: 100%; height: 50px; margin-top: 12px; border-radius: 12px; border: 1px solid #2b333d; background: #0b0d10; color: var(--text); padding: 0 12px; font: inherit; }
+.card { background: var(--card); border-radius: var(--r); padding: 18px; width: 100%; max-width: 480px; max-height: 80vh; display: flex; flex-direction: column; }
+.card input { width: 100%; height: 50px; margin-top: 12px; border-radius: 12px; border: 1px solid var(--ring); background: var(--field); color: var(--text); padding: 0 12px; font: inherit; }
 .drives-list { overflow: auto; margin-top: 10px; color: var(--dim); }
-.drive { padding: 10px 0; border-bottom: 1px solid #232a33; color: var(--text); font-size: 15px; }
+.drive { padding: 10px 0; border-bottom: 1px solid var(--line); color: var(--text); font-size: 15px; }
 
 .start { position: fixed; inset: 0; z-index: 8; border-radius: 0; background: rgba(11, 13, 16, 0.86); font-size: 44px; font-weight: 800; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 10px; }
 .start small { font-size: 15px; font-weight: 400; color: var(--dim); }
@@ -54,3 +57,11 @@ body.over .speedo { background: var(--danger); }
 .side .addcam { background: var(--warn); color: #201200; font-weight: 800; min-height: 60px; padding: 14px 18px; font-size: 19px; }
 .results button { position: relative; padding-right: 54px; }
 .results .del { position: absolute; right: 6px; top: 50%; transform: translateY(-50%); width: 44px; height: 44px; display: flex; align-items: center; justify-content: center; color: var(--dim); font-style: normal; }
+
+/* lane picture: one box per lane, left to right; the lanes to use are lit */
+.lanes { display: flex; gap: 6px; margin-top: 10px; }
+.lanes span { flex: 1; max-width: 62px; height: 54px; border-radius: 10px; background: rgba(0, 0, 0, 0.32); color: rgba(255, 255, 255, 0.38); display: flex; align-items: center; justify-content: center; font-size: 32px; font-weight: 800; line-height: 1; }
+.lanes span.use { background: #fff; color: #0b3d91; }
+[data-theme="neon"] .lanes span.use { background: var(--accent); color: #000; }
+/* road speed limit, drawn like the road sign */
+.limit { position: fixed; left: 112px; bottom: calc(env(safe-area-inset-bottom) + 104px); z-index: 5; width: 58px; height: 58px; border-radius: 50%; background: #fff; color: #111; border: 6px solid #e02020; display: flex; align-items: center; justify-content: center; font-size: 21px; font-weight: 800; font-variant-numeric: tabular-nums; }

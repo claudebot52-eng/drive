@@ -156,3 +156,29 @@ export function lerpAngle(a, b, k) {
   const d = ((b - a + 540) % 360) - 180;
   return (a + d * k + 360) % 360;
 }
+
+const ARROWS = { STRAIGHT: "↑", SLIGHT_RIGHT: "↗", RIGHT: "→", SHARP_RIGHT: "↘", RIGHT_U_TURN: "↷", SLIGHT_LEFT: "↖", LEFT: "←", SHARP_LEFT: "↙", LEFT_U_TURN: "↶" };
+
+/**
+ * Lane picture for the next manoeuvre, or null when none is near.
+ * sections: [{ from, to, lanes: [{ directions: [...], follow? }] }] with from/to in metres along the route.
+ * Shown from `lookahead` metres before the lane section until its end. Lanes run left to right.
+ * A lane with `follow` is one the route can use; its arrow is the direction to take from it.
+ */
+export function laneView(sections, along, lookahead = 800) {
+  for (const s of sections) {
+    if (s.to < along) continue;
+    if (s.from - along > lookahead) return null; // sections are in route order, so nothing nearer follows
+    return {
+      toGo: Math.max(0, s.from - along),
+      lanes: s.lanes.map((l) => ({ arrow: ARROWS[l.follow || l.directions[0]] || "↑", use: !!l.follow })),
+    };
+  }
+  return null;
+}
+
+/** Speed limit in km/h at `along` metres down the route, or null where the map has none. */
+export function limitAt(limits, along) {
+  for (const l of limits) if (along >= l.from && along < l.to) return l.kmh;
+  return null;
+}

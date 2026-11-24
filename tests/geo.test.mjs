@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { distance, bearing, angleDiff, cameraAhead, CameraAlerts, cumulative, locateOnRoute, nextInstruction, fmtDist, sayDist, driveRecord, pointAt, lerpAngle } from "../geo.js";
+import { distance, bearing, angleDiff, cameraAhead, CameraAlerts, cumulative, locateOnRoute, nextInstruction, fmtDist, sayDist, driveRecord, pointAt, lerpAngle, laneView, limitAt } from "../geo.js";
 
 const P = { lat: 24.4, lon: 54.5 };
 const north = (m) => ({ lat: P.lat + m / 111195, lon: P.lon });
@@ -88,4 +88,29 @@ test("pointAt and lerpAngle", () => {
   assert.equal(lerpAngle(350, 10, 0.5), 0);
   assert.equal(lerpAngle(10, 350, 0.5), 0);
   assert.equal(lerpAngle(90, 180, 0.5), 135);
+});
+
+test("laneView: shows the next lane section only when near, marks usable lanes", () => {
+  const secs = [
+    { from: 1000, to: 1100, lanes: [{ directions: ["STRAIGHT"] }, { directions: ["STRAIGHT"], follow: "STRAIGHT" }, { directions: ["STRAIGHT", "SLIGHT_RIGHT"], follow: "SLIGHT_RIGHT" }] },
+    { from: 5000, to: 5050, lanes: [{ directions: ["LEFT"], follow: "LEFT" }] },
+  ];
+  assert.equal(laneView(secs, 0), null); // 1 km away
+  const v = laneView(secs, 400);
+  assert.equal(Math.round(v.toGo), 600);
+  assert.deepEqual(v.lanes, [{ arrow: "↑", use: false }, { arrow: "↑", use: true }, { arrow: "↗", use: true }]);
+  assert.equal(laneView(secs, 1050).toGo, 0); // inside the section
+  assert.equal(laneView(secs, 1200), null); // passed it, next one is far
+  assert.equal(laneView(secs, 4500).lanes[0].arrow, "←");
+  assert.equal(laneView(secs, 6000), null);
+  assert.equal(laneView([], 10), null);
+});
+
+test("limitAt", () => {
+  const limits = [{ from: 0, to: 500, kmh: 60 }, { from: 500, to: 2000, kmh: 120 }, { from: 2600, to: 3000, kmh: 80 }];
+  assert.equal(limitAt(limits, 100), 60);
+  assert.equal(limitAt(limits, 500), 120);
+  assert.equal(limitAt(limits, 2300), null); // gap in the data
+  assert.equal(limitAt(limits, 2999), 80);
+  assert.equal(limitAt(limits, 9999), null);
 });
