@@ -139,3 +139,20 @@ export function driveRecord({ t0, now, name, predicted, noTraffic, metres, rerou
   if (!complete) { rec.ended_early = true; rec.left_m = Math.round(leftM); rec.full_predicted_s = predicted; }
   return rec;
 }
+
+/** Point and direction of travel at `along` metres down a route. */
+export function pointAt(pts, cum, along) {
+  const a = Math.max(0, Math.min(along, cum[cum.length - 1]));
+  let i = cum.findIndex((c) => c >= a);
+  if (i <= 0) i = 1;
+  const seg = cum[i] - cum[i - 1];
+  const k = seg === 0 ? 0 : (a - cum[i - 1]) / seg;
+  const p = pts[i - 1], q = pts[i];
+  return { lat: p.lat + (q.lat - p.lat) * k, lon: p.lon + (q.lon - p.lon) * k, bearing: bearing(p, q) };
+}
+
+/** Bearing part-way from a to b, turning the short way round. */
+export function lerpAngle(a, b, k) {
+  const d = ((b - a + 540) % 360) - 180;
+  return (a + d * k + 360) % 360;
+}

@@ -1,5 +1,5 @@
 // navlab drive screen: map, speed, camera warnings, TomTom route + turn voice, drive log.
-import { distance, bearing, cameraAhead, CameraAlerts, cumulative, locateOnRoute, nextInstruction, fmtDist, sayDist, driveRecord } from "./geo.js";
+import { distance, bearing, cameraAhead, CameraAlerts, cumulative, locateOnRoute, nextInstruction, fmtDist, sayDist, driveRecord, pointAt, lerpAngle } from "./geo.js";
 
 const $ = (id) => document.getElementById(id);
 const store = {
@@ -68,19 +68,44 @@ function initMap() {
     center: [54.45, 24.42], zoom: 9, attributionControl: { compact: true },
   });
   map.on("dragstart", () => { state.follow = false; $("recenter").hidden = false; });
+  // Hold a finger on the map for a moment to route to that exact spot (a car park, a gate).
+  let press;
+  const cancelPress = () => clearTimeout(press);
+  const pin = (ll) => { if (!state.drive) plan({ name: "Dropped pin", lat: ll.lat, lon: ll.lng }); };
+  map.on("touchstart", (e) => { cancelPress(); if (e.originalEvent.touches.length === 1) press = setTimeout(() => pin(e.lngLat), 650); });
+  for (const ev of ["touchend", "touchcancel", "dragstart", "zoomstart"]) map.on(ev, cancelPress);
+  map.on("contextmenu", (e) => pin(e.lngLat));
   map.on("load", async () => {
     map.addSource("route", { type: "geojson", data: { type: "FeatureCollection", features: [] } });
     map.addLayer({ id: "route-casing", type: "line", source: "route", paint: { "line-color": "#0b3d91", "line-width": 9 }, layout: { "line-cap": "round", "line-join": "round" } });
     map.addLayer({ id: "route", type: "line", source: "route", paint: { "line-color": "#4da3ff", "line-width": 5 }, layout: { "line-cap": "round", "line-join": "round" } });
     const data = await (await fetch("./cameras.json")).json();
     state.cameras = data.cameras.map((c) => ({ lat: c.lat, lon: c.lon, limit: Number.parseInt(c.maxspeed, 10) || null }));
-    map.addSource("cams", { type: "geojson", data: { type: "FeatureCollection", features: state.cameras.map((c) => ({ type: "Feature", geometry: { type: "Point", coordinates: [c.lon, c.lat] }, properties: {} })) } });
-    map.addLayer({ id: "cams", type: "circle", source: "cams", minzoom: 9, paint: { "circle-radius": ["interpolate", ["linear"], ["zoom"], 9, 2, 15, 7], "circle-color": "#ff9f1a", "circle-stroke-color": "#111", "circle-stroke-width": 1.5 } });
+    // cameras the driver added by hand live on the phone and join the same list
+    state.cameras.push(...store.get("navlab.mycams", []).map((c) => ({ lat: c.lat, lon: c.lon, limit: null, mine: true })));
+    map.addSource("cams", { type: "geojson", data: camGeo() });
+    map.addLayer({ id: "cams", type: "circle", source: "cams", minzoom: 9, paint: { "circle-radius": ["interpolate", ["linear"], ["zoom"], 9, 2, 15, 7], "circle-color": ["case", ["get", "mine"], "#ff4fd8", "#ff9f1a"], "circle-stroke-color": "#111", "circle-stroke-width": 1.5 } });
     document.body.dataset.ready = "1";
   });
   const el = document.createElement("div");
   el.className = "me";
   meMarker = new maplibregl.Marker({ element: el, rotationAlignment: "map" }); // added to the map on the first fix
+}
+
+const camGeo = () => ({ type: "FeatureCollection", features: state.cameras.map((c) => ({ type: "Feature", geometry: { type: "Point", coordinates: [c.lon, c.lat] }, properties: { mine: !!c.mine } })) });
+
+// One tap while passing a camera the list does not know. Saved on the phone, used from the next pass on.
+function addCamera() {
+  if (!state.pos) return say("No GPS yet.");
+  const c = { lat: state.pos.lat, lon: state.pos.lon, limit: null, mine: true };
+  const mine = store.get("navlab.mycams", []);
+  mine.push({ lat: c.lat, lon: c.lon, heading: state.heading == null ? null : Math.round(state.heading), kmh: Math.round(state.kmh), t: new Date().toISOString() });
+  store.set("navlab.mycams", mine);
+  state.cameras.push(c);
+  if (state.route) state.route.camList.push(c);
+  state.alerts.state.set(state.alerts.key(c), { stage: "done", until: Date.now() + state.alerts.cooldownMs }); // no warning for the one just passed
+  map.getSource("cams").setData(camGeo());
+  say(`Camera saved. ${mine.length} of your own.`);
 }
 
 function setNight(on) {
@@ -89,6 +114,31 @@ function setNight(on) {
   map.getSource("base").setTiles([tileUrl()]);
   $("night").textContent = on ? "Day" : "Night";
 }
+
+// ---------- smooth display ----------
+// GPS arrives about once a second. Drawing each fix as it lands makes the dot hop. So the screen glides from the
+// spot last drawn to the new fix over the gap between fixes, and coasts slightly past it if the next fix is late.
+const glide = { from: null, to: null, t0: 0, dur: 1000, shown: null, lastFix: 0 };
+function glideTo(target) {
+  const now = performance.now();
+  glide.dur = Math.min(1500, Math.max(100, glide.lastFix ? now - glide.lastFix : 1000));
+  glide.lastFix = now;
+  glide.from = glide.shown || target;
+  glide.to = target;
+  glide.t0 = now;
+}
+function frame() {
+  requestAnimationFrame(frame);
+  const { from, to } = glide;
+  if (!to || !map) return;
+  const k = Math.min(1.25, (performance.now() - glide.t0) / glide.dur);
+  const lat = from.lat + (to.lat - from.lat) * k, lon = from.lon + (to.lon - from.lon) * k;
+  const hdg = lerpAngle(from.hdg, to.hdg, Math.min(1, k));
+  glide.shown = { lat, lon, hdg };
+  meMarker.setLngLat([lon, lat]).setRotation(hdg);
+  if (state.follow) map.jumpTo({ center: [lon, lat], bearing: state.kmh > 10 ? hdg : map.getBearing() });
+}
+requestAnimationFrame(frame);
 
 // ---------- position ----------
 function onFix(lat, lon, speedMs, hdg, t = Date.now()) {
@@ -107,12 +157,15 @@ function onFix(lat, lon, speedMs, hdg, t = Date.now()) {
   if (heading != null) state.heading = heading;
   if (!prev || distance(prev.pos, pos) > 8 || t - prev.t > 5000) state.lastFix = { pos, t };
 
-  if (!prev) { meMarker.setLngLat([lon, lat]).addTo(map); gps("ok"); map.jumpTo({ center: [lon, lat], zoom: 15 }); }
-  meMarker.setLngLat([lon, lat]);
-  if (state.heading != null) meMarker.setRotation(state.heading);
-  if (state.follow) {
-    map.easeTo({ center: [lon, lat], zoom: Math.max(map.getZoom(), 15), bearing: state.kmh > 10 && state.heading != null ? state.heading : map.getBearing(), duration: 900 });
+  // What gets drawn: the raw fix, or, while navigating and within 30 m of the route, the matching point on the
+  // route line facing along the road. That hides sideways GPS wobble. Warnings and guidance still use the raw fix.
+  let show = { lat, lon, hdg: state.heading ?? glide.shown?.hdg ?? 0 };
+  if (state.drive && state.route) {
+    const loc = locateOnRoute(pos, state.route.pts, state.route.cum);
+    if (loc.off < 30) { const q = pointAt(state.route.pts, state.route.cum, loc.along); show = { lat: q.lat, lon: q.lon, hdg: q.bearing }; }
   }
+  if (!prev) { meMarker.setLngLat([lon, lat]).addTo(map); gps("ok"); map.jumpTo({ center: [lon, lat], zoom: 15 }); }
+  glideTo(show);
   $("speed").textContent = Math.round(state.kmh);
   checkCameras(t);
   if (state.drive) guide(t);
@@ -135,14 +188,35 @@ function checkCameras(now) {
   if (stage === "near") say(over ? `Camera. Slow down, limit ${limit}.` : `Camera, ${sayDist(hit.dist)}.`);
 }
 
+// ---------- saved places ----------
+// A place is where the driver really stopped for a destination (the car park, not the building's map pin).
+const places = () => store.get("navlab.places", []);
+function savePlace(name, pos) {
+  store.set("navlab.places", [{ name, lat: pos.lat, lon: pos.lon }, ...places().filter((p) => p.name !== name)].slice(0, 30));
+}
+function showPlaces() {
+  const box = $("results");
+  const list = places();
+  box.replaceChildren(...list.map((pl) => {
+    const b = document.createElement("button");
+    b.innerHTML = `<strong></strong><span>Your parking spot · tap to route</span><i class="del" role="button" aria-label="Remove">✕</i>`;
+    b.firstChild.textContent = pl.name;
+    b.onclick = () => { box.hidden = true; $("q").blur(); plan({ ...pl, saved: true }); };
+    b.lastChild.onclick = (e) => { e.stopPropagation(); store.set("navlab.places", places().filter((x) => x.name !== pl.name)); showPlaces(); };
+    return b;
+  }));
+  box.hidden = list.length === 0;
+}
+
 // ---------- search ----------
 let searchTimer;
 $("q").addEventListener("input", () => {
   clearTimeout(searchTimer);
   const q = $("q").value.trim();
-  if (q.length < 3) { $("results").hidden = true; return; }
+  if (q.length < 3) { showPlaces(); return; }
   searchTimer = setTimeout(() => search(q), 400);
 });
+$("q").addEventListener("focus", () => { if ($("q").value.trim().length < 3) showPlaces(); });
 
 async function search(q) {
   const c = map.getCenter();
@@ -184,6 +258,9 @@ function drawRoute(route) {
 
 async function plan(dest) {
   if (!state.pos) { say("No GPS position yet. Route needs your location."); return; }
+  // Been here before and parked somewhere else than the map pin? Route to that spot instead.
+  const spot = dest.saved ? null : places().find((pl) => pl.name === dest.name && distance(pl, dest) < 3000);
+  if (spot) dest = { ...dest, lat: spot.lat, lon: spot.lon, saved: true };
   const from = state.pos;
   try {
     state.route = await fetchRoute(from, dest);
@@ -191,7 +268,7 @@ async function plan(dest) {
   drawRoute(state.route);
   const s = state.route.summary;
   $("plan-name").textContent = dest.name;
-  $("plan-info").textContent = `${Math.round(s.secs / 60)} min · ${(s.metres / 1000).toFixed(1)} km · traffic +${Math.round(s.delay / 60)} min · ${state.route.cams} cameras`;
+  $("plan-info").textContent = `${Math.round(s.secs / 60)} min · ${(s.metres / 1000).toFixed(1)} km · traffic +${Math.round(s.delay / 60)} min · ${state.route.cams} cameras${dest.saved ? " · your parking spot" : ""}`;
   $("plan").hidden = false;
   state.follow = false;
   const b = new maplibregl.LngLatBounds();
@@ -208,6 +285,7 @@ function go() {
   state.follow = true;
   $("recenter").hidden = true;
   map.setPadding({ top: 320, bottom: 0, left: 0, right: 0 });
+  map.setZoom(Math.max(map.getZoom(), 15.5));
   say(`Route to ${state.route.dest.name}. ${Math.round(s.secs / 60)} minutes.`);
 }
 
@@ -221,7 +299,10 @@ function endDrive(arrived) {
     drives.push(rec);
     store.set("navlab.drives", drives);
     const mins = `Predicted ${Math.round(rec.predicted_s / 60)} minutes, took ${Math.round(rec.actual_s / 60)}.`;
-    say(rec.ended_early ? `Drive saved, ended ${sayDist(rec.left_m)} early. ${mins}` : `${arrived ? "Arrived" : "Drive saved"}. ${mins}`);
+    // End pressed near the destination but not on its map pin = this is where the driver parks. Remember it.
+    const parked = !arrived && state.pos && d.leftM < 2000 && d.name !== "Dropped pin" && distance(state.pos, state.route.dest) > 60;
+    if (parked) savePlace(d.name, state.pos);
+    say(`${rec.ended_early ? `Drive saved, ended ${sayDist(rec.left_m)} early.` : arrived ? "Arrived." : "Drive saved."} ${mins}${parked ? " Parking spot remembered." : ""}`);
   }
   state.drive = null;
   state.route = null;
@@ -344,6 +425,7 @@ if (!STANDALONE && !SIM) $("start-hint").textContent = "Safari: first Share → 
 $("start").onclick = () => { $("start").remove(); say("Ready."); keepAwake(); startTracking(); };
 $("recenter").onclick = () => { state.follow = true; $("recenter").hidden = true; if (state.pos) map.easeTo({ center: [state.pos.lon, state.pos.lat], zoom: 15.5 }); };
 $("night").onclick = () => setNight(!state.night);
+$("addcam").onclick = addCamera;
 function setVoice(on) {
   state.voice = on;
   store.set("navlab.voice", on);
@@ -359,7 +441,7 @@ $("stop").onclick = () => endDrive(false);
 $("log").onclick = showDrives;
 $("drives-close").onclick = () => ($("drives").hidden = true);
 $("drives-export").onclick = async () => {
-  const text = JSON.stringify(store.get("navlab.drives", []), null, 1);
+  const text = JSON.stringify({ drives: store.get("navlab.drives", []), my_cameras: store.get("navlab.mycams", []), places: places() }, null, 1);
   try { if (navigator.share) await navigator.share({ title: "navlab drives", text }); else await navigator.clipboard.writeText(text); } catch { /* user closed the share sheet */ }
 };
 
@@ -372,4 +454,4 @@ if ("serviceWorker" in navigator && location.protocol === "https:") {
 }
 $("build").textContent = `version ${BUILD}`;
 boot();
-window.navlab = { state, onFix, plan, go }; // handles for testing from the console
+window.navlab = { state, onFix, plan, go, glide, map: () => map }; // handles for testing from the console

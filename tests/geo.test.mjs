@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { distance, bearing, angleDiff, cameraAhead, CameraAlerts, cumulative, locateOnRoute, nextInstruction, fmtDist, sayDist, driveRecord } from "../geo.js";
+import { distance, bearing, angleDiff, cameraAhead, CameraAlerts, cumulative, locateOnRoute, nextInstruction, fmtDist, sayDist, driveRecord, pointAt, lerpAngle } from "../geo.js";
 
 const P = { lat: 24.4, lon: 54.5 };
 const north = (m) => ({ lat: P.lat + m / 111195, lon: P.lon });
@@ -74,4 +74,18 @@ test("driveRecord: arrival, End near the destination, End early, mis-tap", () =>
   const early = driveRecord({ ...base, now: 700e3, leftM: 8000, remainingS: 480, arrived: false });
   assert.equal(early.ended_early, true); assert.equal(early.predicted_s, 720); assert.equal(early.left_m, 8000); assert.equal(early.full_predicted_s, 1200);
   assert.equal(driveRecord({ ...base, now: 20e3, leftM: 19900, remainingS: 1190, arrived: false }), null);
+});
+
+test("pointAt and lerpAngle", () => {
+  const pts = [P, north(1000), { lat: north(1000).lat, lon: east(1000).lon }];
+  const cum = cumulative(pts);
+  const a = pointAt(pts, cum, 400);
+  assert.ok(distance(a, north(400)) < 2 && angleDiff(a.bearing, 0) < 1);
+  const b = pointAt(pts, cum, 1500);
+  assert.ok(angleDiff(b.bearing, 90) < 1 && Math.abs(distance(b, north(1000)) - 500) < 3);
+  assert.ok(distance(pointAt(pts, cum, 99999), pts[2]) < 1); // clamped to the end
+  assert.ok(distance(pointAt(pts, cum, -5), P) < 1);
+  assert.equal(lerpAngle(350, 10, 0.5), 0);
+  assert.equal(lerpAngle(10, 350, 0.5), 0);
+  assert.equal(lerpAngle(90, 180, 0.5), 135);
 });
