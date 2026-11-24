@@ -6,6 +6,7 @@ REPO=drive
 gh auth status >/dev/null 2>&1 || { echo "Run: gh auth login"; exit 1; }
 v=$(date +%Y%m%d%H%M)
 sed -i '' "s/const CACHE_VERSION = \".*\"/const CACHE_VERSION = \"v$v\"/" sw.js
+sed -i '' "s/^const BUILD = \".*\";/const BUILD = \"$v\";/" app.js
 git add -A
 git commit -qm "deploy: $v" || true
 if ! git remote get-url origin >/dev/null 2>&1; then

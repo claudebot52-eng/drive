@@ -6,6 +6,7 @@ const store = {
   get: (k, d) => { try { return JSON.parse(localStorage.getItem(k)) ?? d; } catch { return d; } },
   set: (k, v) => localStorage.setItem(k, JSON.stringify(v)),
 };
+const BUILD = "dev"; // stamped by deploy.sh
 const params = new URLSearchParams(location.search);
 const SIM = params.has("sim");
 const SIM_KMH = Number(params.get("kmh")) || 110;
@@ -357,6 +358,13 @@ $("drives-export").onclick = async () => {
   try { if (navigator.share) await navigator.share({ title: "navlab drives", text }); else await navigator.clipboard.writeText(text); } catch { /* user closed the share sheet */ }
 };
 
-if ("serviceWorker" in navigator && location.protocol === "https:") navigator.serviceWorker.register("./sw.js");
+if ("serviceWorker" in navigator && location.protocol === "https:") {
+  // updateViaCache "none": the phone always checks the server for a new version of the app
+  navigator.serviceWorker.register("./sw.js", { updateViaCache: "none" }).then((r) => r.update()).catch(() => {});
+  // When a new version takes over, reload once so the screen matches it. Never in the middle of a drive.
+  const hadController = !!navigator.serviceWorker.controller;
+  navigator.serviceWorker.addEventListener("controllerchange", () => { if (hadController && !state.drive) location.reload(); });
+}
+$("build").textContent = `version ${BUILD}`;
 boot();
 window.navlab = { state, onFix, plan, go }; // handles for testing from the console

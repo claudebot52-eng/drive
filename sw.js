@@ -6,6 +6,7 @@ self.addEventListener("activate", (e) => { e.waitUntil(caches.keys().then((ks) =
 self.addEventListener("fetch", (e) => {
   const url = new URL(e.request.url);
   if (url.origin !== location.origin || e.request.method !== "GET") return;
-  // network first, so a new deploy shows up on the next open; cache only as the no-signal fallback
-  e.respondWith(fetch(e.request).then((r) => { const copy = r.clone(); caches.open(CACHE_VERSION).then((c) => c.put(e.request, copy)); return r; }).catch(() => caches.match(e.request)));
+  // Network first and never the browser's own HTTP cache (GitHub Pages allows 10 minutes of staleness),
+  // so a new deploy shows on the next open. The stored copy is only the no-signal fallback.
+  e.respondWith(fetch(e.request, { cache: "no-cache" }).then((r) => { const copy = r.clone(); caches.open(CACHE_VERSION).then((c) => c.put(e.request, copy)); return r; }).catch(() => caches.match(e.request)));
 });
