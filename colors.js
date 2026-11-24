@@ -65,3 +65,27 @@ export function sunsetStyle(style, baseSource = "vectorTiles") {
   }
   return style;
 }
+
+/**
+ * Daytime partner of sunsetStyle, applied to a light map style: warm sand ground, turquoise water,
+ * coral roads, deep-purple labels. Traffic layers are left alone here too.
+ */
+export function sunsetDayStyle(style, baseSource = "vectorTiles") {
+  for (const layer of style.layers) {
+    if (!layer.paint) continue;
+    if (layer.type !== "background" && layer.source !== baseSource) continue;
+    const water = /water|ocean|sea|river|lake/i.test(layer.id);
+    const green = /park|wood|forest|grass|green|vegetation|golf|garden/i.test(layer.id);
+    const paint = (c) => {
+      if (layer.type === "symbol") return { ...c, h: 285, s: 55, l: Math.min(c.l, 26) };                 // label text: deep purple
+      if (water) return { ...c, h: 184, s: 62, l: 72 };                                                  // water: turquoise
+      if (layer.type === "line") return { ...c, h: 345, s: 82, l: Math.min(Math.max(c.l - 22, 58), 74) }; // roads: coral pink
+      if (green) return { ...c, h: 150, s: 38, l: 80 };                                                  // parks: soft mint
+      return { ...c, h: 28, s: 70, l: Math.min(Math.max(c.l, 86), 94) };                                 // ground and buildings: warm sand
+    };
+    const keys = layer.type === "symbol" ? ["text-color"] : Object.keys(layer.paint).filter((k) => k.endsWith("-color"));
+    for (const k of keys) if (layer.paint[k] !== undefined) layer.paint[k] = mapColors(layer.paint[k], paint);
+    if (layer.type === "symbol" && layer.paint["text-halo-color"] !== undefined) layer.paint["text-halo-color"] = "hsla(30, 100%, 97%, 0.95)";
+  }
+  return style;
+}

@@ -1,7 +1,7 @@
 // navlab drive screen: map, speed, camera warnings, TomTom route + turn voice, drive log.
-import { distance, bearing, cameraAhead, CameraAlerts, cumulative, locateOnRoute, nextInstruction, fmtDist, sayDist, driveRecord, pointAt, lerpAngle, laneView, limitAt, parseLimit, OverSpeed, tollNote, clock, thin, incidentsOnRoute, turnIcon, thenTurn, tripStats, personalFactor, usualTrip, icsEvent } from "./geo.js";
+import { distance, bearing, cameraAhead, CameraAlerts, cumulative, locateOnRoute, nextInstruction, fmtDist, sayDist, driveRecord, pointAt, lerpAngle, laneView, limitAt, parseLimit, OverSpeed, tollNote, clock, thin, incidentsOnRoute, turnIcon, thenTurn, tripStats, personalFactor, usualTrip, icsEvent, isDaylight } from "./geo.js";
 
-import { sunsetStyle } from "./colors.js";
+import { sunsetStyle, sunsetDayStyle } from "./colors.js";
 
 const $ = (id) => document.getElementById(id);
 const store = {
@@ -70,14 +70,27 @@ function say(text) {
 const THEMES = [
   // Sunset: neon coastal-city-at-dusk look. The dark map is repainted (purple ground, pink roads, teal water);
   // the route is cyan so it stands out from the pink roads.
-  { id: "sunset", label: "Sunset", map: "2/basic_street-dark-driving", flow: "dark", repaint: sunsetStyle, route: "#3df5ff", casing: "#063a45" },
+  // It has a night and a day look and picks by the sun: night look from sunset to sunrise where the car is.
+  { id: "sunset", label: "Sunset · auto", auto: {
+    night: { map: "2/basic_street-dark-driving", flow: "dark", repaint: sunsetStyle, route: "#3df5ff", casing: "#063a45" },
+    day: { map: "2/basic_street-light-driving", flow: "light", repaint: sunsetDayStyle, route: "#6a2cf0", casing: "#ffffff" } } },
   { id: "night", label: "Night", map: "2/basic_street-dark-driving", flow: "dark" },
   { id: "day", label: "Day", map: "2/basic_street-light-driving", flow: "light" },
   { id: "neon", label: "Neon", map: "2/basic_street-dark-driving", flow: "dark" },
   { id: "sat", label: "Satellite", map: "2/basic_street-satellite", flow: "dark" },
 ];
 const theme = () => THEMES.find((t) => t.id === state.theme) || THEMES[0];
-const styleUrl = () => `${TT}/style/1/style/22.2.1-*?key=${KEY}&map=${theme().map}&traffic_flow=2/flow_relative-${theme().flow}&traffic_incidents=2/incidents_${theme().flow}`;
+// "day" or "night" for a theme that follows the sun, else null. Before the first GPS fix, Abu Dhabi's sun is used.
+// ?sun=day|night forces it (for testing).
+const sunVariant = () => (theme().auto ? params.get("sun") || (isDaylight(new Date(), state.pos?.lat ?? 24.45, state.pos?.lon ?? 54.38) ? "day" : "night") : null);
+// The look in force right now: the theme itself, or its day/night half.
+const skin = () => (theme().auto ? theme().auto[state.variant || "night"] : theme());
+function applyLook() {
+  state.variant = sunVariant();
+  document.documentElement.dataset.theme = theme().id;
+  if (state.variant) document.documentElement.dataset.variant = state.variant; else delete document.documentElement.dataset.variant;
+}
+const styleUrl = () => `${TT}/style/1/style/22.2.1-*?key=${KEY}&map=${skin().map}&traffic_flow=2/flow_relative-${skin().flow}&traffic_incidents=2/incidents_${skin().flow}`;
 // TomTom's style file is fetched by hand so it can be repaired before the map sees it: it contains a colour
 // written as "hsl(160, 43%, 24%%)", which MapLibre rejects, refusing the whole map.
 async function loadStyle() {
@@ -94,7 +107,7 @@ async function loadStyle() {
     else if (tf === "{name}\n{sub_text}") layer.layout["text-field"] = ["concat", NAME, "\n", ["coalesce", ["get", "sub_text"], ""]];
     else if (Array.isArray(tf)) layer.layout["text-field"] = swap(tf);
   }
-  return theme().repaint ? theme().repaint(style) : style;
+  return skin().repaint ? skin().repaint(style) : style;
 }
 const ATTRIBUTION = '© TomTom · cameras © OpenStreetMap, <a href="https://mapatlas.eu/tools/speed-camera-map">MapAtlas</a> CC BY 4.0';
 
@@ -105,8 +118,8 @@ function addOverlays() {
   map.addSource("alts", { type: "geojson", data: altsGeo() });
   map.addLayer({ id: "alts", type: "line", source: "alts", paint: { "line-color": "#9aa4b1", "line-width": 5, "line-opacity": 0.75 }, layout: { "line-cap": "round", "line-join": "round" } }, firstLabel);
   map.addSource("route", { type: "geojson", data: routeGeo(state.route) });
-  map.addLayer({ id: "route-casing", type: "line", source: "route", paint: { "line-color": theme().casing || "#0b3d91", "line-width": 10 }, layout: { "line-cap": "round", "line-join": "round" } }, firstLabel);
-  map.addLayer({ id: "route", type: "line", source: "route", paint: { "line-color": theme().route || "#4da3ff", "line-width": 6 }, layout: { "line-cap": "round", "line-join": "round" } }, firstLabel);
+  map.addLayer({ id: "route-casing", type: "line", source: "route", paint: { "line-color": skin().casing || "#0b3d91", "line-width": 10 }, layout: { "line-cap": "round", "line-join": "round" } }, firstLabel);
+  map.addLayer({ id: "route", type: "line", source: "route", paint: { "line-color": skin().route || "#4da3ff", "line-width": 6 }, layout: { "line-cap": "round", "line-join": "round" } }, firstLabel);
   map.addSource("cams", { type: "geojson", data: camGeo(), attribution: ATTRIBUTION });
   // Camera dots. From zoom 13 a camera with a known limit is drawn as a small speed-limit sign with the number in it.
   const known = ["!=", ["get", "limit"], null];
@@ -122,7 +135,7 @@ function addOverlays() {
 }
 
 async function initMap() {
-  document.documentElement.dataset.theme = theme().id;
+  applyLook();
   let style;
   try { style = await loadStyle(); } catch (e) { say(`Map failed to load. ${e.message}`); return; }
   map = new maplibregl.Map({
@@ -173,7 +186,7 @@ function hideCamera(cam) {
 function setTheme(id) {
   state.theme = id;
   store.set("navlab.theme", id);
-  document.documentElement.dataset.theme = id;
+  applyLook();
   $("theme").textContent = `Theme: ${theme().label}`;
   if (map) loadStyle().then((style) => map.setStyle(style, { diff: false })).catch((e) => say(`Theme failed to load. ${e.message}`));
 }
@@ -193,6 +206,14 @@ function addCamera() {
   map.getSource("cams").setData(camGeo());
   say(`Camera saved. ${mine.length} of your own.`);
 }
+
+// Sunrise and sunset: once a minute, and on the first GPS fix, check whether the look should flip.
+function followSun() {
+  if (!map || !theme().auto || sunVariant() === state.variant) return;
+  setTheme(state.theme);
+  say(state.variant === "day" ? "Day look." : "Night look.");
+}
+setInterval(followSun, 60000);
 
 // ---------- smooth display ----------
 // GPS arrives about once a second. Drawing each fix as it lands makes the dot hop. So the screen glides from the
@@ -243,7 +264,7 @@ function onFix(lat, lon, speedMs, hdg, t = Date.now()) {
     const loc = locateOnRoute(pos, state.route.pts, state.route.cum);
     if (loc.off < 30) { const q = pointAt(state.route.pts, state.route.cum, loc.along); show = { lat: q.lat, lon: q.lon, hdg: q.bearing }; }
   }
-  if (!prev) { meMarker.setLngLat([lon, lat]).addTo(map); gps("ok"); map.jumpTo({ center: [lon, lat], zoom: 15 }); suggestUsual(); tickLeave(); }
+  if (!prev) { meMarker.setLngLat([lon, lat]).addTo(map); gps("ok"); map.jumpTo({ center: [lon, lat], zoom: 15 }); suggestUsual(); tickLeave(); followSun(); }
   glideTo(show);
   $("speed").textContent = Math.round(state.kmh);
   // Road speed limit, always on screen. On a route it comes with the route; where the route has none, and when

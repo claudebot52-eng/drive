@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { distance, bearing, angleDiff, cameraAhead, CameraAlerts, cumulative, locateOnRoute, nextInstruction, fmtDist, sayDist, driveRecord, pointAt, lerpAngle, laneView, limitAt, parseLimit, OverSpeed, darbPeak, tollNote, clock, thin, incidentsOnRoute, turnIcon, thenTurn, tripStats, personalFactor, usualTrip, icsEvent } from "../geo.js";
+import { distance, bearing, angleDiff, cameraAhead, CameraAlerts, cumulative, locateOnRoute, nextInstruction, fmtDist, sayDist, driveRecord, pointAt, lerpAngle, laneView, limitAt, parseLimit, OverSpeed, darbPeak, tollNote, clock, thin, incidentsOnRoute, turnIcon, thenTurn, tripStats, personalFactor, usualTrip, icsEvent, isDaylight } from "../geo.js";
 
 const P = { lat: 24.4, lon: 54.5 };
 const north = (m) => ({ lat: P.lat + m / 111195, lon: P.lon });
@@ -226,4 +226,25 @@ test("icsEvent builds a calendar entry with alerts", () => {
   assert.ok(ics.includes("DTSTART:20261125T035300Z") && ics.includes("DTEND:20261125T035800Z"));
   assert.ok(ics.includes("SUMMARY:Leave for Uni") && ics.includes("TRIGGER:-PT10M") && ics.includes("TRIGGER:PT0M"));
   assert.ok(ics.includes("\r\n"));
+});
+
+test("isDaylight: Abu Dhabi sunrise and sunset, and the far north", () => {
+  const AD = [24.45, 54.38];
+  // 24 Nov: sunrise about 06:42, sunset about 17:33 local (UTC+4)
+  const at = (iso) => new Date(iso + "+04:00");
+  assert.equal(isDaylight(at("2026-11-24T06:20:00"), ...AD), false);
+  assert.equal(isDaylight(at("2026-11-24T07:05:00"), ...AD), true);
+  assert.equal(isDaylight(at("2026-11-24T12:00:00"), ...AD), true);
+  assert.equal(isDaylight(at("2026-11-24T17:10:00"), ...AD), true);
+  assert.equal(isDaylight(at("2026-11-24T17:55:00"), ...AD), false);
+  assert.equal(isDaylight(at("2026-11-24T23:30:00"), ...AD), false);
+  assert.equal(isDaylight(at("2026-11-24T02:00:00"), ...AD), false);
+  // 21 Jun: sunrise about 05:34, sunset about 19:13 local
+  assert.equal(isDaylight(at("2026-06-21T05:10:00"), ...AD), false);
+  assert.equal(isDaylight(at("2026-06-21T06:00:00"), ...AD), true);
+  assert.equal(isDaylight(at("2026-06-21T18:50:00"), ...AD), true);
+  assert.equal(isDaylight(at("2026-06-21T19:40:00"), ...AD), false);
+  // Tromso: midnight sun in June, polar night in December
+  assert.equal(isDaylight(new Date("2026-06-21T00:00:00Z"), 69.65, 18.96), true);
+  assert.equal(isDaylight(new Date("2026-12-21T11:00:00Z"), 69.65, 18.96), false);
 });

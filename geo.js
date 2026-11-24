@@ -330,3 +330,32 @@ export function icsEvent({ title, start, minutes = 5, alertBefore = 10 }) {
     "BEGIN:VALARM", "ACTION:DISPLAY", `DESCRIPTION:${title.replace(/[,;\\]/g, " ")}`, `TRIGGER:-PT${alertBefore}M`, "END:VALARM",
     "BEGIN:VALARM", "ACTION:DISPLAY", `DESCRIPTION:${title.replace(/[,;\\]/g, " ")}`, "TRIGGER:PT0M", "END:VALARM", "END:VEVENT", "END:VCALENDAR"].join("\r\n");
 }
+
+/**
+ * Whether the sun is up at this moment and place (standard sunrise/sunset formula, good to a few minutes).
+ * Far north or south where the sun does not rise or set that day, returns the right constant answer.
+ */
+export function isDaylight(date, lat, lon) {
+  const rad = (d) => (d * Math.PI) / 180, deg = (r) => (r * 180) / Math.PI;
+  const start = Date.UTC(date.getUTCFullYear(), 0, 0);
+  const n = Math.floor((date.getTime() - start) / 86400000); // day of the year, UTC
+  const lngHour = lon / 15;
+  const event = (rising) => {
+    const tt = n + ((rising ? 6 : 18) - lngHour) / 24;
+    const M = 0.9856 * tt - 3.289;
+    const L = (M + 1.916 * Math.sin(rad(M)) + 0.02 * Math.sin(rad(2 * M)) + 282.634 + 720) % 360;
+    let RA = (deg(Math.atan(0.91764 * Math.tan(rad(L)))) + 360) % 360;
+    RA = (RA + Math.floor(L / 90) * 90 - Math.floor(RA / 90) * 90) / 15;
+    const sinDec = 0.39782 * Math.sin(rad(L)), cosDec = Math.cos(Math.asin(sinDec));
+    const cosH = (Math.cos(rad(90.833)) - sinDec * Math.sin(rad(lat))) / (cosDec * Math.cos(rad(lat)));
+    if (cosH > 1) return "never-rises";
+    if (cosH < -1) return "never-sets";
+    const H = (rising ? 360 - deg(Math.acos(cosH)) : deg(Math.acos(cosH))) / 15;
+    return (H + RA - 0.06571 * tt - 6.622 - lngHour + 48) % 24; // hour of the day, UTC
+  };
+  const rise = event(true), set = event(false);
+  if (rise === "never-rises" || set === "never-rises") return false;
+  if (rise === "never-sets" || set === "never-sets") return true;
+  const now = date.getUTCHours() + date.getUTCMinutes() / 60 + date.getUTCSeconds() / 3600;
+  return rise < set ? now >= rise && now < set : now >= rise || now < set;
+}

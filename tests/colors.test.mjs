@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { parseColor, toCss, mapColors, sunsetStyle } from "../colors.js";
+import { parseColor, toCss, mapColors, sunsetStyle, sunsetDayStyle } from "../colors.js";
 
 const near = (a, b, tol = 1) => Math.abs(a - b) <= tol;
 
@@ -46,4 +46,21 @@ test("sunsetStyle repaints the base map only", () => {
   assert.equal(out[2].paint["line-width"], 3);
   assert.ok(parseColor(out[3].paint["text-color"]).l >= 78);
   assert.equal(out[4].paint["line-color"], "#00aa00"); // traffic keeps its meaning
+});
+
+test("sunsetDayStyle: light, warm, traffic untouched", () => {
+  const style = { layers: [
+    { id: "bg", type: "background", paint: { "background-color": "#f2f2f2" } },
+    { id: "Water", type: "fill", source: "vectorTiles", paint: { "fill-color": "#a0c8f0" } },
+    { id: "Major road", type: "line", source: "vectorTiles", paint: { "line-color": "#ffffff" } },
+    { id: "Road label", type: "symbol", source: "vectorTiles", paint: { "text-color": "#555555", "text-halo-color": "#fff" } },
+    { id: "Traffic flow", type: "line", source: "vectorTilesFlow", paint: { "line-color": "#00aa00" } },
+  ] };
+  const out = sunsetDayStyle(style).layers;
+  assert.ok(parseColor(out[0].paint["background-color"]).l >= 86);            // stays a bright map
+  assert.ok(near(parseColor(out[1].paint["fill-color"]).h, 184));
+  const road = parseColor(out[2].paint["line-color"]);
+  assert.ok(near(road.h, 345) && road.l <= 74);                               // visible against the light ground
+  assert.ok(parseColor(out[3].paint["text-color"]).l <= 26);                  // dark text
+  assert.equal(out[4].paint["line-color"], "#00aa00");
 });

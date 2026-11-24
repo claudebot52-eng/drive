@@ -135,3 +135,13 @@ body.over .speedo { background: var(--danger); }
   .sheet { left: auto; right: 0; width: 56%; border-radius: var(--r) 0 0 0; max-height: 100%; overflow: auto; }
   .start { font-size: 34px; }
 }
+
+/* Sunset by day: same pink-to-orange bar, light sand panels, deep purple text */
+[data-theme="sunset"][data-variant="day"] { --bg: #fff3e8; --panel: rgba(255, 246, 238, 0.95); --text: #2a0f3d; --dim: #8a5578; --accent: #ff2d95; --on-accent: #fff; --line: #f3d3df; --card: #fff7f0; --field: #fff; --ring: #ff2d95; }
+[data-theme="sunset"][data-variant="day"] .speedo { background: radial-gradient(circle at 50% 35%, #fff 0%, #ffe3ef 75%); box-shadow: 0 0 20px rgba(255, 45, 149, 0.35); }
+[data-theme="sunset"][data-variant="day"] .speedo span { background: linear-gradient(180deg, #7a1fa2 15%, #ff2d95 100%); -webkit-background-clip: text; background-clip: text; color: transparent; }
+[data-theme="sunset"][data-variant="day"] .me { background: #6a2cf0; box-shadow: 0 0 0 6px rgba(106, 44, 240, 0.22), 0 0 14px rgba(106, 44, 240, 0.7); }
+[data-theme="sunset"][data-variant="day"] .start { background: linear-gradient(180deg, rgba(255, 196, 140, 0.92) 0%, rgba(255, 120, 150, 0.92) 60%, rgba(180, 60, 200, 0.92) 100%); color: #fff; }
+[data-theme="sunset"][data-variant="day"] .start small { color: #fff; }
+[data-theme="sunset"][data-variant="day"] .toast { color: var(--text); }
+body.over .speedo span { background: none !important; color: #fff !important; -webkit-background-clip: border-box !important; background-clip: border-box !important; }
