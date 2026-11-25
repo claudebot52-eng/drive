@@ -44,48 +44,98 @@ export function mapColors(value, fn) {
   return value;
 }
 
+const clamp01 = (v) => Math.min(1, Math.max(0, v));
+const mix = (a, b, t) => a + (b - a) * t;
+
+// Layers that make the screen read as a reference map and say nothing to a driver: shop and landmark icons, house
+// numbers, building edges, railways, ferries, footpaths, one-way arrows, land-use patches, plot borders.
+const CLUTTER = /^(POI|House Number|Buildings - (Outline|Shadow|Underground)|Water - (Shadow|Line)|NatureLabels - Physiography|Borders - Landuse|Landuse - (Military|Urban|Recreation|Transit|Sport)|Surface - (Ferry|Path|Rail ferry|Restricted road dash|Road under construction))|Railway|Road arrow|under construction/i;
+const ROAD_EDGE = /Road outline|road outline|Trunk outline|Street outline|small scale outline/;
+const ROAD = /^(Surface|Tunnel|Bridge)\b.*(road|Road|Street|Trunk)/;
+
+/** Multiplies the widths a line-width value produces by `f`, leaving zoom levels and match labels alone. */
+export function scaleWidth(v, f) {
+  if (typeof v === "number") return +(v * f).toFixed(3);
+  if (Array.isArray(v)) {
+    if (v[0] === "interpolate") return v.map((x, i) => (i >= 4 && i % 2 === 0 ? scaleWidth(x, f) : x));
+    if (v[0] === "step") return v.map((x, i) => (i >= 2 && i % 2 === 0 ? scaleWidth(x, f) : x));
+    if (v[0] === "match") return v.map((x, i) => (i >= 3 && (i % 2 === 1 || i === v.length - 1) ? scaleWidth(x, f) : x));
+    return v;
+  }
+  if (v && typeof v === "object" && Array.isArray(v.stops)) return { ...v, stops: v.stops.map(([z, w]) => [z, scaleWidth(w, f)]) };
+  return v;
+}
+
 /**
- * Repaints a dark map style as a neon sunset: purple ground, teal water, pink roads, warm labels.
- * Only the base map is touched. Traffic layers keep their real colours, because green/orange/red carry meaning there.
+ * Turns a reference map into a driving picture: clutter hidden, and with `flat` the roads lose their drawn edges
+ * and get a little wider, so they read as smooth ribbons on plain ground. Traffic layers are never touched.
  */
-export function sunsetStyle(style, baseSource = "vectorTiles") {
+export function smoothStyle(style, { flat = false, widen = 1.2, baseSource = "vectorTiles" } = {}) {
+  for (const layer of style.layers) {
+    if (layer.source !== baseSource) continue;
+    const hide = CLUTTER.test(layer.id) || (flat && layer.type === "line" && ROAD_EDGE.test(layer.id));
+    if (hide) { layer.layout = { ...layer.layout, visibility: "none" }; continue; }
+    if (flat && layer.type === "line" && ROAD.test(layer.id) && layer.paint?.["line-width"] !== undefined) {
+      layer.paint["line-width"] = scaleWidth(layer.paint["line-width"], widen);
+      layer.layout = { ...layer.layout, "line-cap": "round", "line-join": "round" };
+    }
+    if (layer.type === "fill-extrusion" && layer.paint) layer.paint["fill-extrusion-opacity"] = 0.5;
+  }
+  return style;
+}
+
+const isWater = (id) => /water|ocean|sea|river|lake/i.test(id);
+const isGreen = (id) => /park|wood|forest|grass|green|vegetation|golf|garden|natural/i.test(id);
+function repaint(style, baseSource, pick, halo) {
+  smoothStyle(style, { flat: true, baseSource });
   for (const layer of style.layers) {
     if (!layer.paint) continue;
     if (layer.type !== "background" && layer.source !== baseSource) continue;
-    const water = /water|ocean|sea|river|lake/i.test(layer.id);
-    const paint = (c) => {
-      if (layer.type === "symbol") return { ...c, h: 325, s: Math.max(c.s, 60), l: Math.max(c.l, 78) };            // label text: pale pink
-      if (water) return { ...c, h: 186, s: 70, l: Math.min(Math.max(c.l, 14), 26) };                               // water: deep teal
-      if (layer.type === "line") return { ...c, h: 322, s: 85, l: Math.min(Math.max(c.l + 22, 42), 66) };          // roads and outlines: hot pink
-      return { ...c, h: 268, s: Math.max(c.s, 45), l: Math.min(Math.max(c.l * 0.75, 7), 22) };                     // ground, buildings, parks: purple night
-    };
     const keys = layer.type === "symbol" ? ["text-color"] : Object.keys(layer.paint).filter((k) => k.endsWith("-color"));
+    const paint = pick(layer);
     for (const k of keys) if (layer.paint[k] !== undefined) layer.paint[k] = mapColors(layer.paint[k], paint);
-    if (layer.type === "symbol" && layer.paint["text-halo-color"] !== undefined) layer.paint["text-halo-color"] = "hsla(275, 60%, 8%, 0.9)";
+    if (layer.type === "symbol" && layer.paint["text-halo-color"] !== undefined) layer.paint["text-halo-color"] = halo;
   }
   return style;
 }
 
 /**
- * Daytime partner of sunsetStyle, applied to a light map style: warm sand ground, turquoise water,
- * coral roads, deep-purple labels. Traffic layers are left alone here too.
+ * Night look, painted over a dark map style: one deep indigo ground with no land-use patchwork, near-black teal
+ * water, roads as soft ribbons without edges. The dark TomTom style draws a bigger road darker, so darkness is read
+ * as rank: side streets become a quiet violet just above the ground, main roads a bright lilac-pink.
+ * Only the base map is touched. Traffic layers keep their real colours, because green/orange/red carry meaning there.
+ */
+export function sunsetStyle(style, baseSource = "vectorTiles") {
+  return repaint(style, baseSource, (layer) => (c) => {
+    if (layer.type === "symbol") return { ...c, h: 300, s: 45, l: Math.max(c.l, 80) };                      // label text: pale lilac
+    if (isWater(layer.id)) return { ...c, h: 200, s: 60, l: 9 };                                             // water: near-black teal
+    if (layer.type === "line" && ROAD.test(layer.id)) {
+      const t = clamp01((c.l - 6) / 8);                                                                      // 0 = motorway, 1 = side street
+      return { ...c, h: mix(318, 272, t), s: mix(72, 30, t), l: mix(62, 27, t) };
+    }
+    if (layer.type === "line") return { ...c, h: 275, s: 35, l: 30, a: c.a * 0.6 };                          // borders: faint
+    if (isGreen(layer.id)) return { ...c, h: 250, s: 40, l: 15 };                                            // parks: a shade off the ground
+    if (/Building/i.test(layer.id)) return { ...c, h: 268, s: 38, l: 17 };                                   // buildings: just visible
+    return { ...c, h: 265, s: 48, l: 11 };                                                                   // all ground: one colour
+  }, "hsla(268, 55%, 8%, 0.85)");
+}
+
+/**
+ * Daytime partner of sunsetStyle, painted over a light map style: one cream ground, pale turquoise water, white
+ * side streets and soft coral main roads (the light TomTom style also draws a bigger road darker). Traffic layers
+ * are left alone here too.
  */
 export function sunsetDayStyle(style, baseSource = "vectorTiles") {
-  for (const layer of style.layers) {
-    if (!layer.paint) continue;
-    if (layer.type !== "background" && layer.source !== baseSource) continue;
-    const water = /water|ocean|sea|river|lake/i.test(layer.id);
-    const green = /park|wood|forest|grass|green|vegetation|golf|garden/i.test(layer.id);
-    const paint = (c) => {
-      if (layer.type === "symbol") return { ...c, h: 285, s: 55, l: Math.min(c.l, 26) };                 // label text: deep purple
-      if (water) return { ...c, h: 184, s: 62, l: 72 };                                                  // water: turquoise
-      if (layer.type === "line") return { ...c, h: 345, s: 82, l: Math.min(Math.max(c.l - 22, 58), 74) }; // roads: coral pink
-      if (green) return { ...c, h: 150, s: 38, l: 80 };                                                  // parks: soft mint
-      return { ...c, h: 28, s: 70, l: Math.min(Math.max(c.l, 86), 94) };                                 // ground and buildings: warm sand
-    };
-    const keys = layer.type === "symbol" ? ["text-color"] : Object.keys(layer.paint).filter((k) => k.endsWith("-color"));
-    for (const k of keys) if (layer.paint[k] !== undefined) layer.paint[k] = mapColors(layer.paint[k], paint);
-    if (layer.type === "symbol" && layer.paint["text-halo-color"] !== undefined) layer.paint["text-halo-color"] = "hsla(30, 100%, 97%, 0.95)";
-  }
-  return style;
+  return repaint(style, baseSource, (layer) => (c) => {
+    if (layer.type === "symbol") return { ...c, h: 285, s: 40, l: Math.min(c.l, 28) };                       // label text: deep purple
+    if (isWater(layer.id)) return { ...c, h: 186, s: 55, l: 80 };                                            // water: pale turquoise
+    if (layer.type === "line" && ROAD.test(layer.id)) {
+      const t = clamp01((c.l - 60) / 20);                                                                    // 0 = motorway, 1 = side street
+      return { ...c, h: mix(350, 20, t), s: mix(78, 60, t), l: mix(72, 99, t) };
+    }
+    if (layer.type === "line") return { ...c, h: 30, s: 30, l: 72, a: c.a * 0.6 };                           // borders: faint
+    if (isGreen(layer.id)) return { ...c, h: 140, s: 36, l: 85 };                                            // parks: soft mint
+    if (/Building/i.test(layer.id)) return { ...c, h: 30, s: 45, l: 88 };                                    // buildings: just visible
+    return { ...c, h: 34, s: 62, l: 92 };                                                                    // all ground: one cream
+  }, "hsla(34, 100%, 97%, 0.9)");
 }

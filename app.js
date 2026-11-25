@@ -1,14 +1,14 @@
 // navlab drive screen: map, speed, camera warnings, TomTom route + turn voice, drive log.
 import { distance, bearing, cameraAhead, CameraAlerts, cumulative, locateOnRoute, nextInstruction, fmtDist, sayDist, driveRecord, pointAt, lerpAngle, laneView, limitAt, parseLimit, OverSpeed, tollNote, clock, thin, incidentsOnRoute, turnIcon, thenTurn, tripStats, personalFactor, usualTrip, icsEvent, isDaylight, prepFixes, limitFix, nearestFix, pickLimit } from "./geo.js";
 
-import { sunsetStyle, sunsetDayStyle } from "./colors.js";
+import { sunsetStyle, sunsetDayStyle, smoothStyle } from "./colors.js";
 
 const $ = (id) => document.getElementById(id);
 const store = {
   get: (k, d) => { try { return JSON.parse(localStorage.getItem(k)) ?? d; } catch { return d; } },
   set: (k, v) => localStorage.setItem(k, JSON.stringify(v)),
 };
-const BUILD = "202611251313"; // stamped by deploy.sh
+const BUILD = "202611251322"; // stamped by deploy.sh
 const params = new URLSearchParams(location.search);
 const SIM = params.has("sim");
 const SIM_KMH = Number(params.get("kmh")) || 110;
@@ -47,7 +47,7 @@ const state = {
 };
 let map, meMarker;
 // Choices from the Menu, remembered on the phone.
-const settings = { avoidTolls: false, avoidMotorways: false, beep: true, ...store.get("navlab.settings", {}) };
+const settings = { avoidTolls: false, avoidMotorways: false, beep: true, tilt: true, ...store.get("navlab.settings", {}) };
 const REFRESH_MS = (Number(params.get("refresh")) || 150) * 1000; // how often a drive re-checks traffic
 
 // ---------- voice ----------
@@ -107,7 +107,9 @@ async function loadStyle() {
     else if (tf === "{name}\n{sub_text}") layer.layout["text-field"] = ["concat", NAME, "\n", ["coalesce", ["get", "sub_text"], ""]];
     else if (Array.isArray(tf)) layer.layout["text-field"] = swap(tf);
   }
-  return skin().repaint ? skin().repaint(style) : style;
+  // Every drawn map is decluttered (no shop icons, railways, land-use patches); the Sunset looks also repaint it
+  // with edgeless roads on flat ground. The satellite photo is left as it comes.
+  return skin().repaint ? skin().repaint(style) : skin().map.includes("satellite") ? style : smoothStyle(style);
 }
 const ATTRIBUTION = '© TomTom · cameras © OpenStreetMap, <a href="https://mapatlas.eu/tools/speed-camera-map">MapAtlas</a> CC BY 4.0';
 
@@ -118,6 +120,7 @@ function addOverlays() {
   map.addSource("alts", { type: "geojson", data: altsGeo() });
   map.addLayer({ id: "alts", type: "line", source: "alts", paint: { "line-color": "#9aa4b1", "line-width": 5, "line-opacity": 0.75 }, layout: { "line-cap": "round", "line-join": "round" } }, firstLabel);
   map.addSource("route", { type: "geojson", data: routeGeo(state.route) });
+  map.addLayer({ id: "route-glow", type: "line", source: "route", paint: { "line-color": skin().route || "#4da3ff", "line-width": 26, "line-blur": 18, "line-opacity": 0.45 }, layout: { "line-cap": "round", "line-join": "round" } }, firstLabel);
   map.addLayer({ id: "route-casing", type: "line", source: "route", paint: { "line-color": skin().casing || "#0b3d91", "line-width": 10 }, layout: { "line-cap": "round", "line-join": "round" } }, firstLabel);
   map.addLayer({ id: "route", type: "line", source: "route", paint: { "line-color": skin().route || "#4da3ff", "line-width": 6 }, layout: { "line-cap": "round", "line-join": "round" } }, firstLabel);
   map.addSource("cams", { type: "geojson", data: camGeo(), attribution: ATTRIBUTION });
@@ -244,8 +247,17 @@ function frame() {
   const hdg = lerpAngle(from.hdg, to.hdg, Math.min(1, k));
   glide.shown = { lat, lon, hdg };
   meMarker.setLngLat([lon, lat]).setRotation(hdg);
-  if (state.follow) map.jumpTo({ center: [lon, lat], bearing: state.kmh > 10 ? hdg : map.getBearing() });
+  if (state.follow) {
+    // While driving the map leans back (a view down the road, not a street plan) and the car sits in the lower part
+    // of the screen so more of the road ahead shows. The lean eases in and out over about a second.
+    const want = settings.tilt && state.drive ? TILT : 0;
+    const now = map.getPitch();
+    const pitch = Math.abs(want - now) < 0.4 ? want : now + (want - now) * 0.07;
+    map.jumpTo({ center: [lon, lat], bearing: state.kmh > 10 ? hdg : map.getBearing(), pitch,
+      padding: { top: Math.round(innerHeight * 0.3 * (pitch / TILT)), bottom: 0, left: 0, right: 0 } });
+  }
 }
+const TILT = 52; // degrees
 requestAnimationFrame(frame);
 
 // ---------- position ----------
@@ -530,7 +542,8 @@ async function plan(dest) {
   state.follow = false;
   const b = new maplibregl.LngLatBounds();
   state.options.forEach((o) => o.pts.forEach((p) => b.extend([p.lon, p.lat])));
-  map.fitBounds(b, { padding: { top: 140, bottom: 300, left: 40, right: 40 }, bearing: 0 });
+  map.setPadding({ top: 0, bottom: 0, left: 0, right: 0 }); // drop the driving view's offset before framing the whole route
+  map.fitBounds(b, { padding: { top: 140, bottom: 300, left: 40, right: 40 }, bearing: 0, pitch: 0 });
 }
 
 // Picks one of the offered routes on the plan card.
@@ -939,8 +952,9 @@ function renderMenu() {
   $("beep").textContent = `Over-limit chime: ${settings.beep ? "on" : "off"}`;
   $("avoid-tolls").textContent = `Avoid tolls: ${settings.avoidTolls ? "on" : "off"}`;
   $("avoid-motorways").textContent = `Avoid motorways: ${settings.avoidMotorways ? "on" : "off"}`;
+  $("tilt").textContent = `3D driving view: ${settings.tilt ? "on" : "off"}`;
   $("restore-cams").textContent = `Restore hidden cameras (${store.get("navlab.hiddencams", []).length})`;
-  for (const [id, on] of [["beep", settings.beep], ["avoid-tolls", settings.avoidTolls], ["avoid-motorways", settings.avoidMotorways]]) $(id).classList.toggle("on", on);
+  for (const [id, on] of [["beep", settings.beep], ["avoid-tolls", settings.avoidTolls], ["avoid-motorways", settings.avoidMotorways], ["tilt", settings.tilt]]) $(id).classList.toggle("on", on);
 }
 function flip(key) {
   settings[key] = !settings[key];
@@ -953,6 +967,7 @@ $("menu-close").onclick = () => ($("menu").hidden = true);
 $("beep").onclick = () => flip("beep");
 $("avoid-tolls").onclick = () => flip("avoidTolls");
 $("avoid-motorways").onclick = () => flip("avoidMotorways");
+$("tilt").onclick = () => flip("tilt");
 $("reset-quick").onclick = () => { localStorage.removeItem("navlab.home"); localStorage.removeItem("navlab.work"); renderQuick(); say("Home and Work cleared."); };
 $("home").onclick = () => quick("home");
 $("work").onclick = () => quick("work");

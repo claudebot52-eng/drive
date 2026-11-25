@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { parseColor, toCss, mapColors, sunsetStyle, sunsetDayStyle } from "../colors.js";
+import { parseColor, toCss, mapColors, sunsetStyle, sunsetDayStyle, smoothStyle, scaleWidth } from "../colors.js";
 
 const near = (a, b, tol = 1) => Math.abs(a - b) <= tol;
 
@@ -30,37 +30,62 @@ test("mapColors walks stops and expressions, leaves everything else alone", () =
   assert.equal(toCss({ h: 1.4, s: 2.6, l: 3, a: 0.25 }), "hsla(1, 3%, 3%, 0.25)");
 });
 
-test("sunsetStyle repaints the base map only", () => {
+test("sunsetStyle: flat ground, roads ranked by brightness, clutter and road edges hidden, traffic untouched", () => {
   const style = { layers: [
     { id: "bg", type: "background", paint: { "background-color": "#20262e" } },
-    { id: "Water", type: "fill", source: "vectorTiles", paint: { "fill-color": "#101820" } },
-    { id: "Major road", type: "line", source: "vectorTiles", paint: { "line-color": "#454d57", "line-width": 3 } },
-    { id: "Road label", type: "symbol", source: "vectorTiles", paint: { "text-color": "#cccccc", "text-halo-color": "#000" } },
-    { id: "Traffic flow", type: "line", source: "vectorTilesFlow", paint: { "line-color": "#00aa00" } },
+    { id: "Water - Fill", type: "fill", source: "vectorTiles", paint: { "fill-color": "#101820" } },
+    { id: "Surface - Motorway & Trunk", type: "line", source: "vectorTiles", paint: { "line-color": "hsl(210, 16%, 6%)", "line-width": 3 } },
+    { id: "Surface - Street", type: "line", source: "vectorTiles", paint: { "line-color": "hsl(212, 22%, 14%)", "line-width": ["interpolate", ["exponential", 1.3], ["zoom"], 9, 1, 19, ["match", ["get", "subcategory"], ["local"], 20, 16]] } },
+    { id: "Surface - Street outline", type: "line", source: "vectorTiles", paint: { "line-color": "#555" } },
+    { id: "TransitLabels - Road", type: "symbol", source: "vectorTiles", paint: { "text-color": "#cccccc", "text-halo-color": "#000" } },
+    { id: "POI", type: "symbol", source: "vectorTiles", paint: { "text-color": "#fff" } },
+    { id: "Traffic - Free flow outline", type: "line", source: "vectorTilesFlow", paint: { "line-color": "#00aa00" } },
     { id: "no paint", type: "fill", source: "vectorTiles" },
   ] };
   const out = sunsetStyle(style).layers;
-  assert.ok(near(parseColor(out[0].paint["background-color"]).h, 268));
-  assert.ok(near(parseColor(out[1].paint["fill-color"]).h, 186));
-  assert.ok(near(parseColor(out[2].paint["line-color"]).h, 322));
-  assert.equal(out[2].paint["line-width"], 3);
-  assert.ok(parseColor(out[3].paint["text-color"]).l >= 78);
-  assert.equal(out[4].paint["line-color"], "#00aa00"); // traffic keeps its meaning
+  assert.ok(near(parseColor(out[0].paint["background-color"]).h, 265));
+  assert.ok(parseColor(out[1].paint["fill-color"]).l < parseColor(out[0].paint["background-color"]).l); // water darker than land
+  const big = parseColor(out[2].paint["line-color"]), small = parseColor(out[3].paint["line-color"]);
+  assert.ok(big.l > small.l + 25 && small.l > 20);                 // main road bright, side street quiet but visible
+  assert.equal(out[2].paint["line-width"], 3.6);                    // a little wider
+  assert.deepEqual(out[3].paint["line-width"], ["interpolate", ["exponential", 1.3], ["zoom"], 9, 1.2, 19, ["match", ["get", "subcategory"], ["local"], 24, 19.2]]);
+  assert.equal(out[4].layout.visibility, "none");                   // no drawn road edges
+  assert.ok(parseColor(out[5].paint["text-color"]).l >= 78);
+  assert.equal(out[6].layout.visibility, "none");                   // no shop icons
+  assert.equal(out[7].paint["line-color"], "#00aa00");              // traffic keeps its meaning
+  assert.equal(out[7].layout, undefined);
 });
 
-test("sunsetDayStyle: light, warm, traffic untouched", () => {
+test("sunsetDayStyle: light, warm, main roads stand out, traffic untouched", () => {
   const style = { layers: [
     { id: "bg", type: "background", paint: { "background-color": "#f2f2f2" } },
-    { id: "Water", type: "fill", source: "vectorTiles", paint: { "fill-color": "#a0c8f0" } },
-    { id: "Major road", type: "line", source: "vectorTiles", paint: { "line-color": "#ffffff" } },
-    { id: "Road label", type: "symbol", source: "vectorTiles", paint: { "text-color": "#555555", "text-halo-color": "#fff" } },
-    { id: "Traffic flow", type: "line", source: "vectorTilesFlow", paint: { "line-color": "#00aa00" } },
+    { id: "Water - Fill", type: "fill", source: "vectorTiles", paint: { "fill-color": "#a0c8f0" } },
+    { id: "Surface - Primary road", type: "line", source: "vectorTiles", paint: { "line-color": "hsl(215, 15%, 62%)" } },
+    { id: "Surface - Street", type: "line", source: "vectorTiles", paint: { "line-color": "hsl(215, 15%, 80%)" } },
+    { id: "TransitLabels - Road", type: "symbol", source: "vectorTiles", paint: { "text-color": "#555555", "text-halo-color": "#fff" } },
+    { id: "Traffic - Slow flow", type: "line", source: "vectorTilesFlow", paint: { "line-color": "#00aa00" } },
   ] };
   const out = sunsetDayStyle(style).layers;
-  assert.ok(parseColor(out[0].paint["background-color"]).l >= 86);            // stays a bright map
-  assert.ok(near(parseColor(out[1].paint["fill-color"]).h, 184));
-  const road = parseColor(out[2].paint["line-color"]);
-  assert.ok(near(road.h, 345) && road.l <= 74);                               // visible against the light ground
-  assert.ok(parseColor(out[3].paint["text-color"]).l <= 26);                  // dark text
-  assert.equal(out[4].paint["line-color"], "#00aa00");
+  const ground = parseColor(out[0].paint["background-color"]);
+  assert.ok(ground.l >= 86);                                                   // stays a bright map
+  assert.ok(near(parseColor(out[1].paint["fill-color"]).h, 186));
+  const big = parseColor(out[2].paint["line-color"]), small = parseColor(out[3].paint["line-color"]);
+  assert.ok(big.l <= 78 && big.s >= 60);                                       // main road: coral, clear against cream
+  assert.ok(small.l > ground.l + 4);                                           // side street: white on cream
+  assert.ok(parseColor(out[4].paint["text-color"]).l <= 28);                   // dark text
+  assert.equal(out[5].paint["line-color"], "#00aa00");
+});
+
+test("smoothStyle without flat: hides clutter only, keeps road edges and widths", () => {
+  const style = { layers: [
+    { id: "POI", type: "symbol", source: "vectorTiles" },
+    { id: "Surface - Railway fill", type: "line", source: "vectorTiles", paint: { "line-width": 2 } },
+    { id: "Surface - Street outline", type: "line", source: "vectorTiles", paint: { "line-width": 2 } },
+    { id: "Places - Town", type: "symbol", source: "vectorTiles" },
+    { id: "TrafficIncidents - Minor jam marker", type: "symbol", source: "vectorTilesIncidents" },
+  ] };
+  const out = smoothStyle(style).layers;
+  assert.deepEqual(out.map((l) => l.layout?.visibility ?? "shown"), ["none", "none", "shown", "shown", "shown"]);
+  assert.equal(out[2].paint["line-width"], 2);
+  assert.deepEqual(scaleWidth({ stops: [[0, 1], [16, 2]] }, 2), { stops: [[0, 2], [16, 4]] });
 });
