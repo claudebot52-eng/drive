@@ -1,5 +1,5 @@
 // navlab drive screen: map, speed, camera warnings, TomTom route + turn voice, drive log.
-import { distance, bearing, cameraAhead, CameraAlerts, cumulative, locateOnRoute, nextInstruction, fmtDist, sayDist, driveRecord, pointAt, lerpAngle, laneView, limitAt, parseLimit, OverSpeed, tollNote, clock, thin, incidentsOnRoute, turnIcon, thenTurn, tripStats, personalFactor, usualTrip, icsEvent, isDaylight, prepFixes, limitFix, pickLimit } from "./geo.js";
+import { distance, bearing, cameraAhead, CameraAlerts, cumulative, locateOnRoute, nextInstruction, fmtDist, sayDist, driveRecord, pointAt, lerpAngle, laneView, limitAt, parseLimit, OverSpeed, tollNote, clock, thin, incidentsOnRoute, turnIcon, thenTurn, tripStats, personalFactor, usualTrip, icsEvent, isDaylight, prepFixes, limitFix, nearestFix, pickLimit } from "./geo.js";
 
 import { sunsetStyle, sunsetDayStyle } from "./colors.js";
 
@@ -8,7 +8,7 @@ const store = {
   get: (k, d) => { try { return JSON.parse(localStorage.getItem(k)) ?? d; } catch { return d; } },
   set: (k, v) => localStorage.setItem(k, JSON.stringify(v)),
 };
-const BUILD = "202611241849"; // stamped by deploy.sh
+const BUILD = "202611251313"; // stamped by deploy.sh
 const params = new URLSearchParams(location.search);
 const SIM = params.has("sim");
 const SIM_KMH = Number(params.get("kmh")) || 110;
@@ -290,7 +290,8 @@ function onFix(lat, lon, speedMs, hdg, t = Date.now()) {
 function showLimit(pos, t, ask = true) {
   const hdg = course(t);
   const fixed = limitFix(pos, hdg, state.limitFixes);
-  const osm = fixed == null ? limitFix(pos, hdg, state.osmLimits) : null;
+  const near = fixed == null ? nearestFix(pos, hdg, state.osmLimits) : null; // OpenStreetMap, or a surveyed sign where it has no number
+  const osm = near ? near.kmh : null;
   let tom = state.drive && state.route ? limitAt(state.route.limits, locateOnRoute(pos, state.route.pts, state.route.cum).along) : null;
   state.limitFromRoute = tom != null;
   if (tom == null && fixed == null) {
@@ -300,7 +301,7 @@ function showLimit(pos, t, ask = true) {
   const pick = fixed != null ? { kmh: fixed, unsure: false } : pickLimit(tom, osm, state.limitFromRoute);
   const shown = pick.kmh ?? freeLimit.kmh; // nothing fresh: the last TomTom answer, greyed
   state.roadLimit = pick.kmh;
-  state.limitWhy = { fixed, tomtom: tom, osm, shown: pick.kmh };
+  state.limitWhy = { fixed, tomtom: tom, osm, second: near?.sign ? "the road-sign survey" : "OpenStreetMap", shown: pick.kmh };
   const el = $("limit");
   el.hidden = false;
   el.textContent = shown ?? "–";
@@ -964,8 +965,8 @@ $("limit").onclick = () => {
   const w = state.limitWhy;
   if (!w) return;
   const text = w.fixed != null ? `Limit ${w.fixed}: corrected from an official notice.`
-    : w.tomtom != null && w.osm != null && w.tomtom !== w.osm ? `TomTom says ${w.tomtom}, OpenStreetMap says ${w.osm}. Showing ${w.shown}.`
-    : w.shown != null ? `Limit ${w.shown} (${[w.tomtom != null && "TomTom", w.osm != null && "OpenStreetMap"].filter(Boolean).join(" and ")}).`
+    : w.tomtom != null && w.osm != null && w.tomtom !== w.osm ? `TomTom says ${w.tomtom}, ${w.second} says ${w.osm}. Showing ${w.shown}.`
+    : w.shown != null ? `Limit ${w.shown} (${[w.tomtom != null && "TomTom", w.osm != null && w.second].filter(Boolean).join(" and ")}).`
     : "No fresh limit for this road.";
   $("toast").textContent = text;
   $("toast").hidden = false;

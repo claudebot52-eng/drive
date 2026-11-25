@@ -296,3 +296,25 @@ test("pickLimit: lower of two close sources, TomTom when they are far apart", ()
   assert.deepEqual(pickLimit(40, 120, true), { kmh: 40, unsure: true });
   assert.deepEqual(pickLimit(140, 60, true), { kmh: 140, unsure: true });
 });
+
+test("nearestFix: a minor road matches only close by, and a sign-read number is flagged", async () => {
+  const { nearestFix } = await import("../geo.js");
+  const line = [[24.4, 54.5], [24.4, 54.51]];
+  const fixes = prepFixes([{ kmh: 40, pts: line, two: 1, m: 1, s: 1 }, { kmh: 80, pts: line.map(([la, lo]) => [la + 40 / 111195, lo]) }]);
+  const at = (m) => ({ lat: 24.4 + m / 111195, lon: 54.505 });
+  assert.deepEqual({ ...nearestFix(at(5), 90, fixes), off: 0 }, { off: 0, kmh: 40, sign: true });
+  assert.equal(limitFix(at(18), 90, fixes), 80); // 18 m from the side street, 22 m from the main road: side street is out of reach
+  assert.equal(nearestFix(at(18), 90, fixes).sign, false);
+  assert.equal(limitFix(at(-14), 90, fixes), null);
+});
+
+test("nearestFix: the nearest road having no known limit means no answer, not the neighbour's limit", async () => {
+  const { nearestFix } = await import("../geo.js");
+  const main = [[24.4, 54.5], [24.4, 54.51]];
+  const ramp = main.map(([la, lo]) => [la + 15 / 111195, lo]);
+  const fixes = prepFixes([{ kmh: 140, pts: main }, { pts: ramp }]);
+  const at = (m) => ({ lat: 24.4 + m / 111195, lon: 54.505 });
+  assert.equal(limitFix(at(2), 90, fixes), 140);
+  assert.equal(nearestFix(at(13), 90, fixes), null); // on the ramp, 13 m from the motorway line
+  assert.equal(limitFix(at(13), 90, prepFixes([{ kmh: 140, pts: main }])), 140); // without the ramp piece it would borrow 140
+});

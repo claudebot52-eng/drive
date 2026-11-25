@@ -189,29 +189,37 @@ export function prepFixes(raw) {
   return raw.map((f) => {
     const pts = f.pts.map(([lat, lon]) => ({ lat, lon }));
     const lats = pts.map((p) => p.lat), lons = pts.map((p) => p.lon);
-    return { kmh: f.kmh, two: !!f.two, pts, cum: cumulative(pts),
+    return { kmh: f.kmh ?? null, two: !!f.two, minor: !!f.m, sign: !!f.s, pts, cum: cumulative(pts),
       box: { s: Math.min(...lats) - pad, n: Math.max(...lats) + pad, w: Math.min(...lons) - pad, e: Math.max(...lons) + pad } };
   });
 }
 
 /**
- * Corrected speed limit for the road under `pos`, or null when no correction applies there. Each fix is one
- * carriageway drawn in driving direction. It applies within `max` metres of its line and, when the heading is
- * known, only to a car pointing the same way: the opposite carriageway runs 30 m alongside and can differ.
+ * The limit piece for the road under `pos` as { kmh, sign, off }, or null when none applies there. Each piece is one
+ * carriageway drawn in driving direction. It applies within `max` metres of its line (12 m for a minor road, so a
+ * service road does not lend its limit to the main road beside it) and, when the heading is known, only to a car
+ * pointing the same way: the opposite carriageway runs 30 m alongside and can differ. `sign` = the number was read
+ * from a surveyed sign pole, not from OpenStreetMap. A piece without kmh is a road with no known limit: when it is
+ * the nearest one the answer is null.
  */
-export function limitFix(pos, heading, fixes, { max = 25, turn = 50 } = {}) {
+export function nearestFix(pos, heading, fixes, { max = 25, turn = 50, minorMax = 12 } = {}) {
   let best = null;
   for (const f of fixes) {
     if (pos.lat < f.box.s || pos.lat > f.box.n || pos.lon < f.box.w || pos.lon > f.box.e) continue;
     const loc = locateOnRoute(pos, f.pts, f.cum);
-    if (loc.off > max) continue;
+    if (loc.off > (f.minor ? Math.min(max, minorMax) : max)) continue;
     if (heading != null) {
       const off = angleDiff(heading, bearing(f.pts[loc.index], f.pts[loc.index + 1]));
       if (off > turn && !(f.two && 180 - off <= turn)) continue; // a two-way road is drawn once and serves both headings
     }
-    if (!best || loc.off < best.off) best = { off: loc.off, kmh: f.kmh };
+    if (!best || loc.off < best.off) best = { off: loc.off, kmh: f.kmh, sign: f.sign };
   }
-  return best ? best.kmh : null;
+  return best && best.kmh != null ? best : null; // nearest road has no known limit: say so, do not fall back to the next road over
+}
+
+/** Limit in km/h from nearestFix, or null. */
+export function limitFix(pos, heading, fixes, opts) {
+  return nearestFix(pos, heading, fixes, opts)?.kmh ?? null;
 }
 
 /**
