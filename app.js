@@ -8,7 +8,7 @@ const store = {
   get: (k, d) => { try { return JSON.parse(localStorage.getItem(k)) ?? d; } catch { return d; } },
   set: (k, v) => localStorage.setItem(k, JSON.stringify(v)),
 };
-const BUILD = "202611272007"; // stamped by deploy.sh
+const BUILD = "202611280203"; // stamped by deploy.sh
 const params = new URLSearchParams(location.search);
 const SIM = params.has("sim");
 const SIM_KMH = Number(params.get("kmh")) || 110;
@@ -198,19 +198,19 @@ async function initMap() {
     container: "map", style, center: [54.45, 24.42], zoom: 9, attributionControl: { compact: true },
   });
   if (SIM) window.__map = map; // test hook, simulated runs only
-  // One finger moving the map = look around: the map stops following until Recenter. Two fingers = zoom: the map keeps
-  // following and the new zoom is remembered. The first finger of a pinch often lands a moment early and counts as a
-  // drag, so a second finger within half a second takes that back.
-  let unfollowedAt = 0;
-  map.on("dragstart", () => { if (state.pinch) return; if (state.follow) unfollowedAt = Date.now(); state.follow = false; $("recenter").hidden = false; });
-  map.on("touchstart", (e) => {
-    if (e.originalEvent.touches.length < 2) return;
-    state.pinch = true;
-    if (Date.now() - unfollowedAt < 500) { state.follow = true; $("recenter").hidden = true; }
-  });
-  const pinchEnd = (e) => { if (state.pinch && e.originalEvent.touches.length === 0) { state.pinch = false; state.zoomWant = null; rememberZoom(); } };
-  map.on("touchend", pinchEnd);
-  map.on("touchcancel", pinchEnd);
+  // Any finger on the map = look around. The map stops following the car and stays where it is put until Recenter is
+  // pressed; nothing else brings it back. While following, the map is re-centred on every frame, and that re-centring
+  // cancels a gesture before the map library can recognise it (a slow drag never got through). So it pauses for as
+  // long as a finger or the mouse button is down.
+  const hold = (on) => () => { state.hold = on; };
+  map.on("touchstart", hold(true));
+  map.on("mousedown", hold(true));
+  for (const ev of ["touchend", "touchcancel"]) addEventListener(ev, (e) => { if (!e.touches.length) state.hold = false; }, true);
+  for (const ev of ["mouseup", "blur", "pagehide"]) addEventListener(ev, hold(false), true);
+  let wheel;
+  map.on("wheel", () => { state.hold = true; clearTimeout(wheel); wheel = setTimeout(hold(false), 300); });
+  map.on("dragstart", () => setFollow(false));
+  for (const ev of ["zoomstart", "rotatestart", "pitchstart"]) map.on(ev, (e) => { if (e.originalEvent) setFollow(false); }); // only the driver's own fingers, not the app's moves
   map.once("load", () => document.querySelector(".maplibregl-ctrl-attrib")?.classList.remove("maplibregl-compact-show")); // credit line starts folded behind its (i)
   // Hold a finger on the map for a moment to route to that exact spot (a car park, a gate).
   let press;
@@ -317,7 +317,7 @@ function frame() {
   const hdg = lerpAngle(from.hdg, to.hdg, Math.min(1, k));
   glide.shown = { lat, lon, hdg };
   meMarker.setLngLat([lon, lat]).setRotation(hdg);
-  if (state.follow && !state.pinch) {
+  if (state.follow && !state.hold) {
     // While driving the map leans back (a view down the road, not a street plan) and the car sits in the lower part
     // of the screen so more of the road ahead shows. The lean eases in and out over about a second.
     const want = settings.tilt && state.drive ? TILT : 0;
@@ -332,8 +332,10 @@ function frame() {
 }
 const TILT = 52; // degrees
 
-// Zoom: pinch or the + / − buttons. The level chosen while the map follows the car is kept for the next drive.
+// Zoom while following: the + / − buttons. A pinch looks around instead (the map stops following); Recenter keeps the
+// pinched zoom if it is a sensible driving zoom. The level is kept for the next drive.
 const driveZoom = () => Math.min(18, Math.max(11, store.get("navlab.zoom", 15.5)));
+function setFollow(on) { state.follow = on; $("recenter").hidden = on; }
 function rememberZoom(z = map.getZoom()) { if (state.follow) store.set("navlab.zoom", +z.toFixed(2)); }
 function zoomBy(step) {
   if (!map) return;
@@ -632,7 +634,7 @@ async function plan(dest) {
   choose(0);
   $("plan").hidden = false;
   saveSession({ mode: "plan", dest: spot3(dest), via: null, drive: null });
-  state.follow = false;
+  setFollow(false);
   const b = new maplibregl.LngLatBounds();
   state.options.forEach((o) => o.pts.forEach((p) => b.extend([p.lon, p.lat])));
   map.setPadding({ top: 0, bottom: 0, left: 0, right: 0 }); // drop the driving view's offset before framing the whole route
@@ -672,8 +674,7 @@ function go(resumed) {
   $("plan").hidden = true;
   $("nav").hidden = false;
   $("searchbar").hidden = true;
-  state.follow = true;
-  $("recenter").hidden = true;
+  setFollow(true);
   map.setPadding(navPadding());
   map.setZoom(driveZoom());
   say(resumed ? `Route resumed. Arriving ${arriveAt(s.secs)}.` : `Route to ${state.route.dest.name}. ${Math.round(s.secs / 60)} minutes, arriving ${arriveAt(s.secs)}.`);
@@ -1072,7 +1073,11 @@ function start(auto) {
 }
 $("start").onclick = () => start(false);
 if (!SIM || params.has("resume")) $("start").style.display = "none"; // never shown outside test runs; removed once the map is up
-$("recenter").onclick = () => { state.follow = true; $("recenter").hidden = true; state.zoomWant = driveZoom(); };
+$("recenter").onclick = () => {
+  const z = map.getZoom();
+  setFollow(true);
+  if (z >= 11 && z <= 18) rememberZoom(z); else state.zoomWant = driveZoom(); // far out or right in = was only looking around
+};
 $("zoom-in").onclick = () => zoomBy(0.75);
 $("zoom-out").onclick = () => zoomBy(-0.75);
 $("theme").onclick = () => setTheme(THEMES[(THEMES.indexOf(theme()) + 1) % THEMES.length].id);
