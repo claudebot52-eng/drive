@@ -1,5 +1,5 @@
 // navlab drive screen: map, speed, camera warnings, TomTom route + turn voice, drive log.
-import { distance, bearing, cameraAhead, CameraAlerts, cumulative, locateOnRoute, nextInstruction, fmtDist, sayDist, driveRecord, pointAt, lerpAngle, laneView, limitAt, parseLimit, OverSpeed, tollNote, clock, thin, incidentsOnRoute, turnIcon, thenTurn, tripStats, personalFactor, usualTrip, icsEvent, isDaylight, prepFixes, limitFix, nearestFix, pickLimit, prepPlaces, searchPlaces, mergePlaces } from "./geo.js";
+import { distance, bearing, cameraAhead, CameraAlerts, cumulative, locateOnRoute, nextInstruction, fmtDist, sayDist, driveRecord, pointAt, lerpAngle, laneView, limitAt, parseLimit, OverSpeed, tollNote, clock, thin, incidentsOnRoute, turnIcon, thenTurn, tripStats, personalFactor, usualTrip, icsEvent, isDaylight, prepFixes, limitFix, nearestFix, pickLimit, prepPlaces, searchPlaces, mergePlaces, limitPatch, nearestPiece } from "./geo.js";
 
 import { sunsetStyle, sunsetDayStyle, smoothStyle, calmStyle } from "./colors.js";
 
@@ -8,7 +8,7 @@ const store = {
   get: (k, d) => { try { return JSON.parse(localStorage.getItem(k)) ?? d; } catch { return d; } },
   set: (k, v) => localStorage.setItem(k, JSON.stringify(v)),
 };
-const BUILD = "202611272003"; // stamped by deploy.sh
+const BUILD = "202611272007"; // stamped by deploy.sh
 const params = new URLSearchParams(location.search);
 const SIM = params.has("sim");
 const SIM_KMH = Number(params.get("kmh")) || 110;
@@ -47,7 +47,7 @@ if (!store.get("navlab.silenced", false)) {
 // ---------- state ----------
 const state = {
   pos: null, heading: null, kmh: 0, lastFix: null,
-  follow: true, theme: store.get("navlab.theme", "sunset"), voice: store.get("navlab.voice", false), roadLimit: null, limitFixes: [], osmLimits: [], limitWhy: null, course: null,
+  follow: true, theme: store.get("navlab.theme", "sunset"), voice: store.get("navlab.voice", false), roadLimit: null, limitFixes: [], osmLimits: [], myLimits: prepFixes(store.get("navlab.mylimits", [])), limitWhy: null, course: null,
   cameras: [], alerts: new CameraAlerts(), overSpeed: new OverSpeed(),
   options: null, // routes offered on the plan card, fastest first
   route: null,   // { pts, cum, instructions, lanes, limits, tolls, incidents, summary, dest }
@@ -383,7 +383,8 @@ function onFix(lat, lon, speedMs, hdg, t = Date.now()) {
 // The last answer stays up; once nothing fresh is known it is greyed and not used for the over-speed warning.
 function showLimit(pos, t, ask = true) {
   const hdg = course(t);
-  const fixed = limitFix(pos, hdg, state.limitFixes);
+  const mine = limitFix(pos, hdg, state.myLimits, { max: 30 }); // typed in by the driver on this road: beats every source
+  const fixed = mine ?? limitFix(pos, hdg, state.limitFixes);
   const near = fixed == null ? nearestFix(pos, hdg, state.osmLimits) : null; // OpenStreetMap, or a surveyed sign where it has no number
   const osm = near ? near.kmh : null;
   let tom = state.drive && state.route ? limitAt(state.route.limits, locateOnRoute(pos, state.route.pts, state.route.cum).along) : null;
@@ -395,8 +396,9 @@ function showLimit(pos, t, ask = true) {
   const pick = fixed != null ? { kmh: fixed, unsure: false } : pickLimit(tom, osm, state.limitFromRoute);
   const shown = pick.kmh ?? freeLimit.kmh; // nothing fresh: the last TomTom answer, greyed
   state.roadLimit = pick.kmh;
-  state.limitWhy = { fixed, tomtom: tom, osm, second: near?.sign ? "the road-sign survey" : "OpenStreetMap", shown: pick.kmh };
+  state.limitWhy = { mine, fixed, tomtom: tom, osm, second: near?.sign ? "the road-sign survey" : "OpenStreetMap", shown: pick.kmh };
   const el = $("limit");
+  el.classList.toggle("mine", mine != null);
   el.hidden = false;
   el.textContent = shown ?? "–";
   el.classList.toggle("stale", pick.kmh == null);
@@ -1092,6 +1094,7 @@ function renderMenu() {
   $("tilt").textContent = `3D driving view: ${settings.tilt ? "on" : "off"}`;
   $("cam-voice").textContent = `Camera voice: ${settings.camVoice ? "on" : "off"}`;
   $("restore-cams").textContent = `Restore hidden cameras (${store.get("navlab.hiddencams", []).length})`;
+  $("clear-limits").textContent = `Clear my speed limits (${state.myLimits.length})`;
   for (const [id, on] of [["beep", settings.beep], ["avoid-tolls", settings.avoidTolls], ["avoid-motorways", settings.avoidMotorways], ["tilt", settings.tilt], ["cam-voice", settings.camVoice]]) $(id).classList.toggle("on", on);
 }
 function flip(key) {
@@ -1118,19 +1121,52 @@ $("set-home").onclick = () => setQuick("home", state.route.dest);
 $("set-work").onclick = () => setQuick("work", state.route.dest);
 $("add-stop").onclick = openStops;
 $("cam").onclick = () => { if (state.camHit) hideCamera(state.camHit); };
-// Tap the limit sign to see where the number comes from.
+// Tap the limit sign: where the number comes from, and a row of numbers to set the right one for this road.
+const LIMITS = [20, 30, 40, 50, 60, 70, 80, 90, 100, 110, 120, 130, 140, 160];
 $("limit").onclick = () => {
   const w = state.limitWhy;
-  if (!w) return;
-  const text = w.fixed != null ? `Limit ${w.fixed}: corrected from an official notice.`
+  if (!w || !state.pos) return;
+  $("limit-why").textContent = w.mine != null ? `Showing ${w.mine}: set by you.`
+    : w.fixed != null ? `Showing ${w.fixed}: corrected from an official notice.`
     : w.tomtom != null && w.osm != null && w.tomtom !== w.osm ? `TomTom says ${w.tomtom}, ${w.second} says ${w.osm}. Showing ${w.shown}.`
-    : w.shown != null ? `Limit ${w.shown} (${[w.tomtom != null && "TomTom", w.osm != null && w.second].filter(Boolean).join(" and ")}).`
-    : "No fresh limit for this road.";
-  $("toast").textContent = text;
-  $("toast").hidden = false;
-  clearTimeout(say.t);
-  say.t = setTimeout(() => ($("toast").hidden = true), 6000);
+    : w.shown != null ? `Showing ${w.shown} (${[w.tomtom != null && "TomTom", w.osm != null && w.second].filter(Boolean).join(" and ")}).`
+    : "No limit known for this road.";
+  $("limit-grid").replaceChildren(...LIMITS.map((kmh) => {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.textContent = kmh;
+    b.className = kmh === w.shown ? "on" : "";
+    b.onclick = () => setMyLimit(kmh);
+    return b;
+  }));
+  $("limit-clear").hidden = w.mine == null;
+  $("limit-set").hidden = false;
 };
+// My limits live on the phone as road pieces in the same shape as the limits layer, so the same lookup reads them.
+// A new one replaces any of mine already covering this spot.
+function dropMyLimitHere() {
+  const hdg = course(Date.now());
+  let hit;
+  while ((hit = nearestPiece(state.pos, hdg, state.myLimits, { max: 30 }))) state.myLimits = state.myLimits.filter((f) => f !== hit.piece);
+}
+const storeMyLimits = () => store.set("navlab.mylimits", state.myLimits.map((f) => ({ kmh: f.kmh, two: f.two, pts: f.pts.map((p) => [p.lat, p.lon]), t: f.t, was: f.was })));
+function setMyLimit(kmh) {
+  $("limit-set").hidden = true;
+  if (!state.pos) return;
+  const w = state.limitWhy || {};
+  dropMyLimitHere();
+  const patch = limitPatch(state.pos, course(Date.now()), { roads: state.osmLimits, route: state.drive ? state.route : null });
+  const [piece] = prepFixes([{ kmh, two: patch.two, pts: patch.pts }]);
+  piece.t = new Date().toISOString();
+  piece.was = { shown: w.shown ?? null, tomtom: w.tomtom ?? null, osm: w.osm ?? null }; // what the sources said, for the export
+  state.myLimits.push(piece);
+  storeMyLimits();
+  showLimit(state.pos, Date.now(), false);
+  say(`Limit set to ${kmh} on this road.`);
+}
+$("limit-clear").onclick = () => { $("limit-set").hidden = true; dropMyLimitHere(); storeMyLimits(); showLimit(state.pos, Date.now(), false); say("Your limit removed here."); };
+$("limit-close").onclick = () => ($("limit-set").hidden = true);
+$("clear-limits").onclick = () => { state.myLimits = []; storeMyLimits(); if (state.pos) showLimit(state.pos, Date.now(), false); say("Your speed limits cleared."); renderMenu(); };
 $("arrive-by").onchange = planLeave;
 $("leave-remind").onclick = remindLeave;
 $("leave-calendar").onclick = leaveToCalendar;
@@ -1146,7 +1182,7 @@ $("stop").onclick = () => endDrive(false);
 $("log").onclick = () => { $("menu").hidden = true; showDrives(); };
 $("drives-close").onclick = () => ($("drives").hidden = true);
 $("drives-export").onclick = async () => {
-  const text = JSON.stringify({ drives: store.get("navlab.drives", []), my_cameras: store.get("navlab.mycams", []), hidden_cameras: store.get("navlab.hiddencams", []), places: places() }, null, 1);
+  const text = JSON.stringify({ drives: store.get("navlab.drives", []), my_cameras: store.get("navlab.mycams", []), hidden_cameras: store.get("navlab.hiddencams", []), my_limits: store.get("navlab.mylimits", []), places: places() }, null, 1);
   try { if (navigator.share) await navigator.share({ title: "navlab drives", text }); else await navigator.clipboard.writeText(text); } catch { /* user closed the share sheet */ }
 };
 

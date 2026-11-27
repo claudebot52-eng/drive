@@ -202,7 +202,14 @@ export function prepFixes(raw) {
  * from a surveyed sign pole, not from OpenStreetMap. A piece without kmh is a road with no known limit: when it is
  * the nearest one the answer is null.
  */
-export function nearestFix(pos, heading, fixes, { max = 25, turn = 50, minorMax = 12 } = {}) {
+export function nearestFix(pos, heading, fixes, opts) {
+  const hit = nearestPiece(pos, heading, fixes, opts);
+  // nearest road has no known limit: say so, do not fall back to the next road over
+  return hit && hit.piece.kmh != null ? { off: hit.off, kmh: hit.piece.kmh, sign: hit.piece.sign } : null;
+}
+
+/** The piece itself (also one without a number) nearest to `pos` under nearestFix's rules: { piece, off, along }, or null. */
+export function nearestPiece(pos, heading, fixes, { max = 25, turn = 50, minorMax = 12 } = {}) {
   let best = null;
   for (const f of fixes) {
     if (pos.lat < f.box.s || pos.lat > f.box.n || pos.lon < f.box.w || pos.lon > f.box.e) continue;
@@ -212,9 +219,9 @@ export function nearestFix(pos, heading, fixes, { max = 25, turn = 50, minorMax 
       const off = angleDiff(heading, bearing(f.pts[loc.index], f.pts[loc.index + 1]));
       if (off > turn && !(f.two && 180 - off <= turn)) continue; // a two-way road is drawn once and serves both headings
     }
-    if (!best || loc.off < best.off) best = { off: loc.off, kmh: f.kmh, sign: f.sign };
+    if (!best || loc.off < best.off) best = { piece: f, off: loc.off, along: loc.along };
   }
-  return best && best.kmh != null ? best : null; // nearest road has no known limit: say so, do not fall back to the next road over
+  return best;
 }
 
 /** Limit in km/h from nearestFix, or null. */
@@ -467,4 +474,32 @@ export function mergePlaces(own, tomtom, { top = 3, rest = 3 } = {}) {
   const later = own.filter((h) => !first.includes(h)).slice(0, rest);
   const mid = tomtom.filter((t) => !first.some((h) => same(h, t)));
   return [...first, ...mid, ...later.filter((h) => !mid.some((t) => same(h, t)))];
+}
+
+// ---------- the driver's own speed limits ----------
+/** The part of a line between `from` and `to` metres along it, as [[lat, lon], ...]. */
+export function sliceLine(pts, cum, from, to) {
+  const a = Math.max(0, from), b = Math.min(cum[cum.length - 1], to);
+  const ends = [pointAt(pts, cum, a), pointAt(pts, cum, b)];
+  return [ends[0], ...pts.filter((_, i) => cum[i] > a && cum[i] < b), ends[1]].map((p) => [+p.lat.toFixed(6), +p.lon.toFixed(6)]);
+}
+
+/**
+ * The stretch of road a limit typed in by the driver should cover, as { two, pts } in the limits-layer format.
+ * Best: the mapped road piece under the car, up to `reach` metres each way (a mapped piece ends where the road or
+ * its limit changes). Else the route line, 300 m back and 700 m on. Else a straight line along the heading.
+ */
+export function limitPatch(pos, heading, { roads = [], route = null, reach = 1500 } = {}) {
+  const hit = nearestPiece(pos, heading, roads);
+  if (hit) {
+    const pts = sliceLine(hit.piece.pts, hit.piece.cum, hit.along - reach, hit.along + reach);
+    if (pts.length > 1 && (pts[0][0] !== pts[pts.length - 1][0] || pts[0][1] !== pts[pts.length - 1][1])) return { two: hit.piece.two, pts };
+  }
+  if (route) {
+    const loc = locateOnRoute(pos, route.pts, route.cum);
+    if (loc.off < 40 && route.cum[route.cum.length - 1] > 50) return { two: false, pts: sliceLine(route.pts, route.cum, loc.along - 300, loc.along + 700) };
+  }
+  const h = rad(heading ?? 0), kx = 111320 * Math.cos(rad(pos.lat));
+  const at = (m) => [+(pos.lat + (m * Math.cos(h)) / 110540).toFixed(6), +(pos.lon + (m * Math.sin(h)) / kx).toFixed(6)];
+  return { two: heading == null, pts: heading == null ? [at(-300), at(300)] : [at(-200), at(600)] };
 }

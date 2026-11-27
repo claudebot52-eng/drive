@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { distance, bearing, angleDiff, cameraAhead, CameraAlerts, cumulative, locateOnRoute, nextInstruction, fmtDist, sayDist, driveRecord, pointAt, lerpAngle, laneView, limitAt, parseLimit, OverSpeed, darbPeak, tollNote, clock, thin, incidentsOnRoute, turnIcon, thenTurn, tripStats, personalFactor, usualTrip, icsEvent, isDaylight, prepFixes, limitFix, pickLimit, normName, prepPlaces, searchPlaces, mergePlaces } from "../geo.js";
+import { distance, bearing, angleDiff, cameraAhead, CameraAlerts, cumulative, locateOnRoute, nextInstruction, fmtDist, sayDist, driveRecord, pointAt, lerpAngle, laneView, limitAt, parseLimit, OverSpeed, darbPeak, tollNote, clock, thin, incidentsOnRoute, turnIcon, thenTurn, tripStats, personalFactor, usualTrip, icsEvent, isDaylight, prepFixes, limitFix, pickLimit, normName, prepPlaces, searchPlaces, mergePlaces, sliceLine, limitPatch, nearestPiece } from "../geo.js";
 
 const P = { lat: 24.4, lon: 54.5 };
 const north = (m) => ({ lat: P.lat + m / 111195, lon: P.lon });
@@ -380,4 +380,43 @@ test("mergePlaces: strong own hits first, the provider's list next, duplicates d
   assert.equal(list.filter((r) => r.name === "Yas Mall").length, 1);
   assert.ok(list.findIndex((r) => r.name === "Bani Yas Street") < list.findIndex((r) => r.name === "Bay Auto Garage Yas"));
   assert.deepEqual(mergePlaces([], provider), provider);
+});
+
+// ---------- the driver's own limits ----------
+test("sliceLine cuts a stretch out of a line and keeps the corners inside it", () => {
+  const pts = [P, north(1000), north(2000)], cum = cumulative(pts);
+  const cut = sliceLine(pts, cum, 400, 1600);
+  assert.equal(cut.length, 3);
+  assert.ok(Math.abs(distance({ lat: cut[0][0], lon: cut[0][1] }, north(400))) < 2);
+  assert.ok(Math.abs(distance({ lat: cut[2][0], lon: cut[2][1] }, north(1600))) < 2);
+  assert.equal(sliceLine(pts, cum, -500, 9999).length, 3);                 // clamped to the line's ends
+});
+
+test("limitPatch: the mapped road under the car, else the route, else a line along the heading", () => {
+  const road = prepFixes([{ pts: [[P.lat, P.lon], [north(5000).lat, north(5000).lon]] }]);   // a road with no known limit
+  const onRoad = limitPatch(north(2500), 0, { roads: road });
+  const len = (pts) => distance({ lat: pts[0][0], lon: pts[0][1] }, { lat: pts.at(-1)[0], lon: pts.at(-1)[1] });
+  assert.ok(Math.abs(len(onRoad.pts) - 3000) < 5);                         // 1.5 km each way
+  assert.equal(onRoad.two, false);
+  assert.ok(Math.abs(len(limitPatch(north(300), 0, { roads: road }).pts) - 1800) < 5);   // stops at the piece's end
+
+  const routePts = [east(0), east(4000)], route = { pts: routePts, cum: cumulative(routePts) };
+  const onRoute = limitPatch(east(1000), 90, { roads: road, route });       // 1 km east: off the mapped road, on the route
+  assert.ok(Math.abs(len(onRoute.pts) - 1000) < 5);
+
+  const bare = limitPatch(east(1000), 90, {});
+  assert.ok(Math.abs(len(bare.pts) - 800) < 5);
+  assert.ok(Math.abs(distance({ lat: bare.pts[1][0], lon: bare.pts[1][1] }, east(1600))) < 5);   // 600 m ahead, along the heading
+  assert.equal(limitPatch(P, null, {}).two, true);                         // no heading: both ways
+});
+
+test("a limit set by the driver is found again on that road, in that direction, and nowhere else", () => {
+  const patch = limitPatch(north(2500), 0, { roads: prepFixes([{ pts: [[P.lat, P.lon], [north(5000).lat, north(5000).lon]] }]) });
+  const mine = prepFixes([{ kmh: 100, two: patch.two, pts: patch.pts }]);
+  assert.equal(limitFix(north(3000), 0, mine, { max: 30 }), 100);
+  assert.equal(limitFix(north(3000), 180, mine, { max: 30 }), null);        // other direction
+  assert.equal(limitFix(north(4500), 0, mine, { max: 30 }), null);          // past the stretch
+  assert.equal(limitFix({ lat: north(3000).lat, lon: east(60).lon }, 0, mine, { max: 30 }), null);   // the road beside it
+  assert.equal(nearestPiece(north(3000), 0, mine, { max: 30 }).piece, mine[0]);
+  assert.equal(nearestPiece(north(4500), 0, mine, { max: 30 }), null);
 });
