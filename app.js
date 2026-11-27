@@ -8,7 +8,7 @@ const store = {
   get: (k, d) => { try { return JSON.parse(localStorage.getItem(k)) ?? d; } catch { return d; } },
   set: (k, v) => localStorage.setItem(k, JSON.stringify(v)),
 };
-const BUILD = "202611271953"; // stamped by deploy.sh
+const BUILD = "202611271955"; // stamped by deploy.sh
 const params = new URLSearchParams(location.search);
 const SIM = params.has("sim");
 const SIM_KMH = Number(params.get("kmh")) || 110;
@@ -36,10 +36,18 @@ async function tt(path, query = {}, body) {
   return res.json();
 }
 
+// One-time switch-off (2026-11-27, the driver asked for a silent app): voice, over-limit chime and camera voice all
+// off, whatever was stored before. Each can be turned back on in the Menu and then stays on.
+if (!store.get("navlab.silenced", false)) {
+  store.set("navlab.voice", false);
+  store.set("navlab.settings", { ...store.get("navlab.settings", {}), beep: false, camVoice: false });
+  store.set("navlab.silenced", true);
+}
+
 // ---------- state ----------
 const state = {
   pos: null, heading: null, kmh: 0, lastFix: null,
-  follow: true, theme: store.get("navlab.theme", "sunset"), voice: store.get("navlab.voice", true), roadLimit: null, limitFixes: [], osmLimits: [], limitWhy: null, course: null,
+  follow: true, theme: store.get("navlab.theme", "sunset"), voice: store.get("navlab.voice", false), roadLimit: null, limitFixes: [], osmLimits: [], limitWhy: null, course: null,
   cameras: [], alerts: new CameraAlerts(), overSpeed: new OverSpeed(),
   options: null, // routes offered on the plan card, fastest first
   route: null,   // { pts, cum, instructions, lanes, limits, tolls, incidents, summary, dest }
@@ -47,7 +55,7 @@ const state = {
 };
 let map, meMarker;
 // Choices from the Menu, remembered on the phone.
-const settings = { avoidTolls: false, avoidMotorways: false, beep: true, tilt: true, camVoice: false, ...store.get("navlab.settings", {}) };
+const settings = { avoidTolls: false, avoidMotorways: false, beep: false, tilt: true, camVoice: false, ...store.get("navlab.settings", {}) };
 const REFRESH_MS = (Number(params.get("refresh")) || 150) * 1000; // how often a drive re-checks traffic
 
 // ---------- voice ----------
