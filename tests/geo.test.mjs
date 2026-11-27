@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { distance, bearing, angleDiff, cameraAhead, CameraAlerts, cumulative, locateOnRoute, nextInstruction, fmtDist, sayDist, driveRecord, pointAt, lerpAngle, laneView, limitAt, parseLimit, OverSpeed, darbPeak, tollNote, clock, thin, incidentsOnRoute, turnIcon, thenTurn, tripStats, personalFactor, usualTrip, icsEvent, isDaylight, prepFixes, limitFix, pickLimit } from "../geo.js";
+import { distance, bearing, angleDiff, cameraAhead, CameraAlerts, cumulative, locateOnRoute, nextInstruction, fmtDist, sayDist, driveRecord, pointAt, lerpAngle, laneView, limitAt, parseLimit, OverSpeed, darbPeak, tollNote, clock, thin, incidentsOnRoute, turnIcon, thenTurn, tripStats, personalFactor, usualTrip, icsEvent, isDaylight, prepFixes, limitFix, pickLimit, normName, prepPlaces, searchPlaces, mergePlaces } from "../geo.js";
 
 const P = { lat: 24.4, lon: 54.5 };
 const north = (m) => ({ lat: P.lat + m / 111195, lon: P.lon });
@@ -317,4 +317,67 @@ test("nearestFix: the nearest road having no known limit means no answer, not th
   assert.equal(limitFix(at(2), 90, fixes), 140);
   assert.equal(nearestFix(at(13), 90, fixes), null); // on the ramp, 13 m from the motorway line
   assert.equal(limitFix(at(13), 90, prepFixes([{ kmh: 140, pts: main }])), 140); // without the ramp piece it would borrow 140
+});
+
+// ---------- place search ----------
+const PLACES = prepPlaces({ kinds: ["building", "stadium", "mall", "car repair", "area"], areas: ["Abu Dhabi", "Dubai"], p: [
+  ["Yas Bay Waterfront", 24.4655, 54.6001, 0, 0, 1],
+  ["Etihad Arena", 24.4640, 54.6010, 1, 0, 2],
+  ["Yas Mall", 24.4886, 54.6084, 2, 0, 3],
+  ["Marina Mall", 24.4760, 54.3215, 2, 0, 3],
+  ["Marina Mall", 25.0764, 55.1403, 2, 1, 3],
+  ["Bay Auto Garage Yas", 24.30, 54.63, 3, 0, 0],
+  ["The Dubai Mall", 25.1972, 55.2796, 2, 1, 3],
+  ["Al Wahda Mall", 24.4705, 54.3727, 2, 0, 3],
+  ["Café Élan", 24.45, 54.40, 0, 0, 0],
+] });
+const BANIYAS = { lat: 24.30, lon: 54.62 };
+
+test("normName folds case, accents and punctuation", () => {
+  assert.equal(normName("  Café Élan — Al-Wahda! "), "cafe elan al wahda");
+  assert.equal(normName("ياس مول"), "ياس مول");
+});
+
+test("searchPlaces finds a place the map provider lacks, from a partial word", () => {
+  const hits = searchPlaces(PLACES, "Yas bay", BANIYAS);
+  assert.equal(hits[0].name, "Yas Bay Waterfront");
+  assert.equal(hits[0].top, true);
+  assert.equal(hits[0].kind, "building");
+  assert.equal(hits[0].area, "Abu Dhabi");
+  assert.ok(hits[0].dist > 15000 && hits[0].dist < 25000);
+  assert.equal(searchPlaces(PLACES, "yas ba", BANIYAS)[0].name, "Yas Bay Waterfront");
+  assert.equal(searchPlaces(PLACES, "etihad ar", BANIYAS)[0].name, "Etihad Arena");
+});
+
+test("searchPlaces: every word must match, the nearer twin wins, leading the/al is optional", () => {
+  assert.deepEqual(searchPlaces(PLACES, "yas arena", BANIYAS), []);
+  const twins = searchPlaces(PLACES, "marina mall", BANIYAS);
+  assert.equal(twins.length, 2);
+  assert.equal(twins[0].area, "Abu Dhabi");
+  assert.equal(searchPlaces(PLACES, "marina mall", { lat: 25.08, lon: 55.14 })[0].area, "Dubai");
+  assert.equal(searchPlaces(PLACES, "dubai mall", BANIYAS)[0].top, true);
+  assert.equal(searchPlaces(PLACES, "wahda mall", BANIYAS)[0].name, "Al Wahda Mall");
+  assert.equal(searchPlaces(PLACES, "cafe elan", BANIYAS)[0].name, "Café Élan");
+  assert.deepEqual(searchPlaces(PLACES, "y", BANIYAS), []);
+  assert.deepEqual(searchPlaces(null, "yas", BANIYAS), []);
+});
+
+test("searchPlaces: a word in the middle of a small shop's name is not a top hit", () => {
+  const hits = searchPlaces(PLACES, "bay", BANIYAS);
+  const garage = hits.find((h) => h.name === "Bay Auto Garage Yas");
+  assert.equal(garage.top, false);                       // weight 0, although the name starts with the text
+  assert.equal(hits.find((h) => h.name === "Yas Bay Waterfront").top, false);
+});
+
+test("mergePlaces: strong own hits first, the provider's list next, duplicates dropped", () => {
+  const own = searchPlaces(PLACES, "yas", BANIYAS);
+  const provider = [
+    { name: "Bani Yas Street", lat: 24.301, lon: 54.621, sub: "Bani Yas", dist: 300 },
+    { name: "Yas Mall", lat: 24.4887, lon: 54.6085, sub: "Yas Island", dist: 20800 },
+  ];
+  const list = mergePlaces(own, provider);
+  assert.equal(list[0].name, "Yas Mall");                 // own, weight 3
+  assert.equal(list.filter((r) => r.name === "Yas Mall").length, 1);
+  assert.ok(list.findIndex((r) => r.name === "Bani Yas Street") < list.findIndex((r) => r.name === "Bay Auto Garage Yas"));
+  assert.deepEqual(mergePlaces([], provider), provider);
 });

@@ -413,3 +413,58 @@ export function isDaylight(date, lat, lon) {
   const now = date.getUTCHours() + date.getUTCMinutes() / 60 + date.getUTCSeconds() / 3600;
   return rise < set ? now >= rise && now < set : now >= rise || now < set;
 }
+
+// ---------- place search (OpenStreetMap names, second source next to TomTom) ----------
+/** Lower case, accents off, punctuation to spaces. Arabic letters are kept. */
+export function normName(s) {
+  return String(s).toLowerCase().normalize("NFD").replace(/[̀-ًͯ-ْ]/g, "").replace(/[^a-z0-9ء-ي]+/g, " ").trim();
+}
+const lead = (n) => n.replace(/^(the|al) /, "");
+
+/** places_osm.json -> search index. Entry: [name, lat, lon, kind index, area index or -1, weight 0..3]. */
+export function prepPlaces(data) {
+  return { kinds: data.kinds, areas: data.areas, p: data.p, n: data.p.map((r) => normName(r[0])) };
+}
+
+/**
+ * Places whose name holds every typed word as the start of a word ("yas ba" finds "Yas Bay Waterfront").
+ * Best first: exact name, then name starting with the text, then heavier class, then nearer.
+ * `top` marks a hit good enough to stand above TomTom's list.
+ */
+export function searchPlaces(index, query, near, limit = 6) {
+  const q = normName(query);
+  if (!index || q.length < 2) return [];
+  let toks = q.split(" ");
+  const core = toks.filter((t) => t !== "al" && t !== "the");
+  if (core.length) toks = core;
+  const longest = toks.reduce((a, b) => (b.length > a.length ? b : a));
+  const ql = lead(q), hits = [];
+  for (let i = 0; i < index.n.length; i++) {
+    const n = index.n[i];
+    if (!n.includes(longest)) continue;
+    let ok = true;
+    for (const t of toks) if (!(n.startsWith(t) || n.includes(" " + t))) { ok = false; break; }
+    if (!ok) continue;
+    const r = index.p[i], nl = lead(n);
+    const exact = nl === ql, starts = nl.startsWith(ql);
+    const dist = near ? distance(near, { lat: r[1], lon: r[2] }) : 0;
+    const extra = Math.max(0, n.split(" ").length - toks.length);
+    // a small shop that merely shares the name ("Baniyas" the jeweller) must not outrank the district
+    const score = r[5] * 10 + (exact ? (r[5] ? 40 : 15) : 0) + (starts ? 20 : 0) - extra * 2 - 4 * Math.log2(1 + dist / 10000);
+    hits.push({ name: r[0], lat: r[1], lon: r[2], kind: index.kinds[r[3]], area: r[4] >= 0 ? index.areas[r[4]] : "", dist, score, top: starts && r[5] >= 1 });
+  }
+  hits.sort((a, b) => b.score - a.score);
+  return hits.slice(0, limit);
+}
+
+/**
+ * One list from both sources: strong own hits, then TomTom's, then the remaining own hits.
+ * A TomTom entry with the same name within 500 m of an own hit is dropped. Items: { name, lat, lon, sub, dist }.
+ */
+export function mergePlaces(own, tomtom, { top = 3, rest = 3 } = {}) {
+  const same = (a, b) => normName(a.name) === normName(b.name) && distance(a, b) < 500;
+  const first = own.filter((h) => h.top).slice(0, top);
+  const later = own.filter((h) => !first.includes(h)).slice(0, rest);
+  const mid = tomtom.filter((t) => !first.some((h) => same(h, t)));
+  return [...first, ...mid, ...later.filter((h) => !mid.some((t) => same(h, t)))];
+}

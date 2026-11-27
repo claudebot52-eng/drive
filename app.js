@@ -1,5 +1,5 @@
 // navlab drive screen: map, speed, camera warnings, TomTom route + turn voice, drive log.
-import { distance, bearing, cameraAhead, CameraAlerts, cumulative, locateOnRoute, nextInstruction, fmtDist, sayDist, driveRecord, pointAt, lerpAngle, laneView, limitAt, parseLimit, OverSpeed, tollNote, clock, thin, incidentsOnRoute, turnIcon, thenTurn, tripStats, personalFactor, usualTrip, icsEvent, isDaylight, prepFixes, limitFix, nearestFix, pickLimit } from "./geo.js";
+import { distance, bearing, cameraAhead, CameraAlerts, cumulative, locateOnRoute, nextInstruction, fmtDist, sayDist, driveRecord, pointAt, lerpAngle, laneView, limitAt, parseLimit, OverSpeed, tollNote, clock, thin, incidentsOnRoute, turnIcon, thenTurn, tripStats, personalFactor, usualTrip, icsEvent, isDaylight, prepFixes, limitFix, nearestFix, pickLimit, prepPlaces, searchPlaces, mergePlaces } from "./geo.js";
 
 import { sunsetStyle, sunsetDayStyle, smoothStyle } from "./colors.js";
 
@@ -8,7 +8,7 @@ const store = {
   get: (k, d) => { try { return JSON.parse(localStorage.getItem(k)) ?? d; } catch { return d; } },
   set: (k, v) => localStorage.setItem(k, JSON.stringify(v)),
 };
-const BUILD = "202611251322"; // stamped by deploy.sh
+const BUILD = "202611271940"; // stamped by deploy.sh
 const params = new URLSearchParams(location.search);
 const SIM = params.has("sim");
 const SIM_KMH = Number(params.get("kmh")) || 110;
@@ -165,6 +165,7 @@ async function initMap() {
     try { state.limitFixes = prepFixes((await (await fetch("./limit_fixes.json")).json()).fixes); } catch { state.limitFixes = []; }
     // OpenStreetMap's limit for every main road: the second opinion next to TomTom. Big file, so it loads on the side.
     fetch("./limits_osm.json").then((r) => r.json()).then((d) => { state.osmLimits = prepFixes(d.roads); }).catch(() => {});
+    fetch("./places_osm.json").then((r) => r.json()).then((d) => { state.places = prepPlaces(d); }).catch(() => {});
     const hidden = new Set(store.get("navlab.hiddencams", [])); // cameras the driver marked as not there
     // A speed camera's number: its own tag and the road's limit beside it (worked out when the list is built) go
     // through the same rule as the road sign, because camera lists are years old.
@@ -448,23 +449,30 @@ $("q").addEventListener("input", () => {
 });
 $("q").addEventListener("focus", () => { if ($("q").value.trim().length < 3) showPlaces(); });
 
+// Two sources: TomTom, and named places from OpenStreetMap searched on the phone (TomTom has no "Yas Bay").
 async function search(q) {
   const c = map.getCenter();
   const near = state.pos || { lat: c.lat, lon: c.lng };
+  const cap = (s) => s.charAt(0).toUpperCase() + s.slice(1);
+  const own = searchPlaces(state.places, q, near, 6).map((h) => ({ ...h, sub: [cap(h.kind), h.area].filter(Boolean).join(" · ") }));
+  let found = [], failed = "";
   try {
-    const j = await tt(`/search/2/search/${encodeURIComponent(q)}.json`, { limit: 6, countrySet: "AE", lat: near.lat, lon: near.lon });
-    const box = $("results");
-    box.replaceChildren(...j.results.map((r) => {
-      const b = document.createElement("button");
-      const name = r.poi?.name || r.address.freeformAddress;
-      b.innerHTML = `<strong></strong><span></span>`;
-      b.firstChild.textContent = name;
-      b.lastChild.textContent = `${r.address.freeformAddress || ""} · ${fmtDist(r.dist || 0)}`;
-      b.onclick = () => { box.hidden = true; $("q").value = name; $("q").blur(); plan({ name, lat: r.position.lat, lon: r.position.lon }); };
-      return b;
-    }));
-    box.hidden = j.results.length === 0;
-  } catch (e) { say(`Search failed. ${e.message}`); }
+    const j = await tt(`/search/2/search/${encodeURIComponent(q)}.json`, { limit: 6, countrySet: "AE", lat: near.lat, lon: near.lon, language: "en-GB" });
+    found = j.results.map((r) => ({ name: r.poi?.name || r.address.freeformAddress, lat: r.position.lat, lon: r.position.lon, sub: r.address.freeformAddress || "", dist: r.dist || 0 }));
+  } catch (e) { failed = e.message; }
+  if ($("q").value.trim() !== q) return;   // the text changed while waiting
+  const list = mergePlaces(own, found);
+  const box = $("results");
+  box.replaceChildren(...list.map((r) => {
+    const b = document.createElement("button");
+    b.innerHTML = `<strong></strong><span></span>`;
+    b.firstChild.textContent = r.name;
+    b.lastChild.textContent = [r.sub, fmtDist(r.dist)].filter(Boolean).join(" · ");
+    b.onclick = () => { box.hidden = true; $("q").value = r.name; $("q").blur(); plan({ name: r.name, lat: r.lat, lon: r.lon }); };
+    return b;
+  }));
+  box.hidden = list.length === 0;
+  if (failed && !list.length) say(`Search failed. ${failed}`);
 }
 
 // ---------- routes ----------
