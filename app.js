@@ -8,7 +8,7 @@ const store = {
   get: (k, d) => { try { return JSON.parse(localStorage.getItem(k)) ?? d; } catch { return d; } },
   set: (k, v) => localStorage.setItem(k, JSON.stringify(v)),
 };
-const BUILD = "202611271955"; // stamped by deploy.sh
+const BUILD = "202611272003"; // stamped by deploy.sh
 const params = new URLSearchParams(location.search);
 const SIM = params.has("sim");
 const SIM_KMH = Number(params.get("kmh")) || 110;
@@ -244,8 +244,8 @@ async function initMap() {
     state.cameras.push(...store.get("navlab.mycams", []).map((c) => ({ lat: c.lat, lon: c.lon, limit: null, mine: true })));
     map.getSource("cams")?.setData(camGeo());
     document.body.dataset.ready = "1";
-    // Reloaded within half a day of being used: skip the Start button.
-    if (resumeFrom?.started && Date.now() - resumeFrom.t < 12 * 3600e3 && (!SIM || params.has("resume"))) start(true);
+    // No Start screen: the app opens straight on the map. (Test runs with ?sim keep the button, to press it themselves.)
+    if (!SIM || params.has("resume")) start(true);
   });
   const el = document.createElement("div");
   el.className = "me";
@@ -1063,12 +1063,13 @@ function start(auto) {
   $("start").remove();
   try { audio = new (window.AudioContext || window.webkitAudioContext)(); audio.resume(); } catch { /* no sound system: chimes stay silent */ }
   // After a reload nobody tapped anything, and the phone may hold sound back until a tap: wake it on the first touch.
-  if (auto) addEventListener("pointerdown", () => audio?.resume(), { once: true }); else say("Ready.");
+  if (auto) addEventListener("pointerdown", () => { audio?.resume(); keepAwake(); }, { once: true }); else say("Ready.");
   saveSession({ started: true });
   keepAwake();
   startTracking();
 }
 $("start").onclick = () => start(false);
+if (!SIM || params.has("resume")) $("start").style.display = "none"; // never shown outside test runs; removed once the map is up
 $("recenter").onclick = () => { state.follow = true; $("recenter").hidden = true; state.zoomWant = driveZoom(); };
 $("zoom-in").onclick = () => zoomBy(0.75);
 $("zoom-out").onclick = () => zoomBy(-0.75);
