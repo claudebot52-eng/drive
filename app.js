@@ -8,7 +8,7 @@ const store = {
   get: (k, d) => { try { return JSON.parse(localStorage.getItem(k)) ?? d; } catch { return d; } },
   set: (k, v) => localStorage.setItem(k, JSON.stringify(v)),
 };
-const BUILD = "202611271940"; // stamped by deploy.sh
+const BUILD = "202611271941"; // stamped by deploy.sh
 const params = new URLSearchParams(location.search);
 const SIM = params.has("sim");
 const SIM_KMH = Number(params.get("kmh")) || 110;
@@ -111,7 +111,7 @@ async function loadStyle() {
   // with edgeless roads on flat ground. The satellite photo is left as it comes.
   return skin().repaint ? skin().repaint(style) : skin().map.includes("satellite") ? style : smoothStyle(style);
 }
-const ATTRIBUTION = '© TomTom · cameras © OpenStreetMap, <a href="https://mapatlas.eu/tools/speed-camera-map">MapAtlas</a> CC BY 4.0';
+const ATTRIBUTION = '© TomTom · cameras, limits, places © OpenStreetMap, <a href="https://mapatlas.eu/tools/speed-camera-map">MapAtlas</a> CC BY 4.0';
 
 // Our own layers sit on top of the TomTom style. A theme change replaces the whole style, so they are re-added each time.
 function addOverlays() {
