@@ -1,14 +1,14 @@
 // navlab drive screen: map, speed, camera warnings, TomTom route + turn voice, drive log.
 import { distance, bearing, cameraAhead, CameraAlerts, cumulative, locateOnRoute, nextInstruction, fmtDist, sayDist, driveRecord, pointAt, lerpAngle, laneView, limitAt, parseLimit, OverSpeed, tollNote, clock, thin, incidentsOnRoute, turnIcon, thenTurn, tripStats, personalFactor, usualTrip, icsEvent, isDaylight, prepFixes, limitFix, nearestFix, pickLimit, prepPlaces, searchPlaces, mergePlaces } from "./geo.js";
 
-import { sunsetStyle, sunsetDayStyle, smoothStyle } from "./colors.js";
+import { sunsetStyle, sunsetDayStyle, smoothStyle, calmStyle } from "./colors.js";
 
 const $ = (id) => document.getElementById(id);
 const store = {
   get: (k, d) => { try { return JSON.parse(localStorage.getItem(k)) ?? d; } catch { return d; } },
   set: (k, v) => localStorage.setItem(k, JSON.stringify(v)),
 };
-const BUILD = "202611271941"; // stamped by deploy.sh
+const BUILD = "202611271953"; // stamped by deploy.sh
 const params = new URLSearchParams(location.search);
 const SIM = params.has("sim");
 const SIM_KMH = Number(params.get("kmh")) || 110;
@@ -47,7 +47,7 @@ const state = {
 };
 let map, meMarker;
 // Choices from the Menu, remembered on the phone.
-const settings = { avoidTolls: false, avoidMotorways: false, beep: true, tilt: true, ...store.get("navlab.settings", {}) };
+const settings = { avoidTolls: false, avoidMotorways: false, beep: true, tilt: true, camVoice: false, ...store.get("navlab.settings", {}) };
 const REFRESH_MS = (Number(params.get("refresh")) || 150) * 1000; // how often a drive re-checks traffic
 
 // ---------- voice ----------
@@ -109,9 +109,50 @@ async function loadStyle() {
   }
   // Every drawn map is decluttered (no shop icons, railways, land-use patches); the Sunset looks also repaint it
   // with edgeless roads on flat ground. The satellite photo is left as it comes.
-  return skin().repaint ? skin().repaint(style) : skin().map.includes("satellite") ? style : smoothStyle(style);
+  if (skin().map.includes("satellite")) return style;
+  return calmStyle(skin().repaint ? skin().repaint(style) : smoothStyle(style));
 }
 const ATTRIBUTION = '© TomTom · cameras, limits, places © OpenStreetMap, <a href="https://mapatlas.eu/tools/speed-camera-map">MapAtlas</a> CC BY 4.0';
+
+// Camera pins, drawn once. A pin = rounded badge with a pointer under it; the picture inside says what kind:
+// yellow with a camera = speed camera, red with a traffic light = red-light camera, pink camera = one you added.
+let camImgs;
+function camImages() {
+  if (camImgs) return camImgs;
+  const INK = "#16121f";
+  const pin = (fill, glyph) => {
+    const c = document.createElement("canvas");
+    c.width = 96; c.height = 112;
+    const g = c.getContext("2d");
+    g.beginPath();
+    g.roundRect(8, 6, 80, 80, 20);
+    g.moveTo(34, 82); g.lineTo(48, 106); g.lineTo(62, 82); g.closePath();
+    g.lineJoin = "round"; g.lineWidth = 7; g.strokeStyle = INK; g.stroke();
+    g.fillStyle = fill; g.fill();
+    glyph(g, fill);
+    return g.getImageData(0, 0, c.width, c.height);
+  };
+  const camera = (g, fill) => {
+    g.fillStyle = INK;
+    g.beginPath(); g.roundRect(20, 32, 56, 38, 8); g.fill();          // body
+    g.beginPath(); g.roundRect(34, 23, 22, 14, 5); g.fill();          // top hump
+    g.fillStyle = fill; g.beginPath(); g.arc(48, 51, 12.5, 0, 7); g.fill();   // lens ring
+    g.fillStyle = INK; g.beginPath(); g.arc(48, 51, 7, 0, 7); g.fill();
+    g.fillStyle = fill; g.beginPath(); g.arc(67, 40, 3.2, 0, 7); g.fill();    // flash
+  };
+  const light = (g) => {
+    g.fillStyle = INK; g.strokeStyle = "#fff"; g.lineWidth = 3;
+    g.beginPath(); g.roundRect(35, 13, 26, 66, 10); g.fill(); g.stroke();
+    for (const [y, col] of [[27, "#ff5a5a"], [46, "#ffc21a"], [65, "#4ade80"]]) { g.fillStyle = col; g.beginPath(); g.arc(48, y, 7, 0, 7); g.fill(); }
+  };
+  const ring = document.createElement("canvas");
+  ring.width = ring.height = 56;
+  const r = ring.getContext("2d");
+  r.fillStyle = "#fff"; r.beginPath(); r.arc(28, 28, 26, 0, 7); r.fill();
+  r.strokeStyle = "#e02020"; r.lineWidth = 7; r.beginPath(); r.arc(28, 28, 22.5, 0, 7); r.stroke();
+  camImgs = { "cam-speed": pin("#ffc21a", camera), "cam-light": pin("#e5383b", light), "cam-mine": pin("#ff4fd8", camera), "cam-ring": r.getImageData(0, 0, 56, 56) };
+  return camImgs;
+}
 
 // Our own layers sit on top of the TomTom style. A theme change replaces the whole style, so they are re-added each time.
 function addOverlays() {
@@ -124,16 +165,20 @@ function addOverlays() {
   map.addLayer({ id: "route-casing", type: "line", source: "route", paint: { "line-color": skin().casing || "#0b3d91", "line-width": 10 }, layout: { "line-cap": "round", "line-join": "round" } }, firstLabel);
   map.addLayer({ id: "route", type: "line", source: "route", paint: { "line-color": skin().route || "#4da3ff", "line-width": 6 }, layout: { "line-cap": "round", "line-join": "round" } }, firstLabel);
   map.addSource("cams", { type: "geojson", data: camGeo(), attribution: ATTRIBUTION });
-  // Camera dots. From zoom 13 a camera with a known limit is drawn as a small speed-limit sign with the number in it.
-  const known = ["!=", ["get", "limit"], null];
-  map.addLayer({ id: "cams", type: "circle", source: "cams", minzoom: 9, paint: {
-    "circle-radius": ["interpolate", ["linear"], ["zoom"], 9, 2, 12.9, 5, 13, ["case", known, 11, 6], 16, ["case", known, 15, 8]],
-    "circle-color": ["step", ["zoom"], ["case", ["get", "mine"], "#ff4fd8", "#ff9f1a"], 13, ["case", ["get", "mine"], "#ff4fd8", known, "#ffffff", "#ff9f1a"]],
-    "circle-stroke-color": ["step", ["zoom"], "#111", 13, ["case", known, "#e02020", "#111"]],
-    "circle-stroke-width": ["step", ["zoom"], 1.5, 13, ["case", known, 3, 1.5]] } });
+  // Cameras: small dots on the overview, a camera pin from zoom 13.5, and from 14.5 the limit as a small sign on its corner.
+  for (const [name, img] of Object.entries(camImages())) if (!map.hasImage(name)) map.addImage(name, img, { pixelRatio: 2 });
+  const kindColor = ["case", ["get", "mine"], "#ff4fd8", ["get", "light"], "#e5383b", "#ffc21a"];
+  map.addLayer({ id: "cams", type: "circle", source: "cams", minzoom: 9, maxzoom: 13.5, paint: {
+    "circle-radius": ["interpolate", ["linear"], ["zoom"], 9, 1.5, 13.5, 4.5], "circle-color": kindColor, "circle-stroke-color": "#16121f", "circle-stroke-width": 1 } });
+  const camSize = ["interpolate", ["linear"], ["zoom"], 13.5, 0.55, 14.5, 0.7, 16.5, 0.95];
+  map.addLayer({ id: "cam-icons", type: "symbol", source: "cams", minzoom: 13.5, layout: {
+    "icon-image": ["case", ["get", "mine"], "cam-mine", ["get", "light"], "cam-light", "cam-speed"], "icon-anchor": "bottom", "icon-size": camSize,
+    "icon-allow-overlap": true, "icon-ignore-placement": true } });
   const font = map.getStyle().layers.find((l) => l.layout?.["text-font"])?.layout["text-font"];
-  if (font) map.addLayer({ id: "cam-limits", type: "symbol", source: "cams", minzoom: 13, filter: ["!=", ["get", "limit"], null],
-    layout: { "text-field": ["to-string", ["get", "limit"]], "text-font": font, "text-size": ["interpolate", ["linear"], ["zoom"], 13, 10, 16, 14], "text-allow-overlap": true, "text-ignore-placement": true },
+  if (font) map.addLayer({ id: "cam-limits", type: "symbol", source: "cams", minzoom: 14.5, filter: ["!=", ["get", "limit"], null],
+    layout: { "icon-image": "cam-ring", "icon-size": camSize, "icon-offset": [19, -50], "icon-allow-overlap": true, "icon-ignore-placement": true,
+      "text-field": ["to-string", ["get", "limit"]], "text-font": font, "text-size": ["interpolate", ["linear"], ["zoom"], 14.5, 9, 16.5, 12],
+      "text-offset": [1.5, -3.97], "text-allow-overlap": true, "text-ignore-placement": true },
     paint: { "text-color": "#111" } });
 }
 
@@ -144,7 +189,21 @@ async function initMap() {
   map = new maplibregl.Map({
     container: "map", style, center: [54.45, 24.42], zoom: 9, attributionControl: { compact: true },
   });
-  map.on("dragstart", () => { state.follow = false; $("recenter").hidden = false; });
+  if (SIM) window.__map = map; // test hook, simulated runs only
+  // One finger moving the map = look around: the map stops following until Recenter. Two fingers = zoom: the map keeps
+  // following and the new zoom is remembered. The first finger of a pinch often lands a moment early and counts as a
+  // drag, so a second finger within half a second takes that back.
+  let unfollowedAt = 0;
+  map.on("dragstart", () => { if (state.pinch) return; if (state.follow) unfollowedAt = Date.now(); state.follow = false; $("recenter").hidden = false; });
+  map.on("touchstart", (e) => {
+    if (e.originalEvent.touches.length < 2) return;
+    state.pinch = true;
+    if (Date.now() - unfollowedAt < 500) { state.follow = true; $("recenter").hidden = true; }
+  });
+  const pinchEnd = (e) => { if (state.pinch && e.originalEvent.touches.length === 0) { state.pinch = false; state.zoomWant = null; rememberZoom(); } };
+  map.on("touchend", pinchEnd);
+  map.on("touchcancel", pinchEnd);
+  map.once("load", () => document.querySelector(".maplibregl-ctrl-attrib")?.classList.remove("maplibregl-compact-show")); // credit line starts folded behind its (i)
   // Hold a finger on the map for a moment to route to that exact spot (a car park, a gate).
   let press;
   const cancelPress = () => clearTimeout(press);
@@ -154,7 +213,7 @@ async function initMap() {
   map.on("contextmenu", (e) => pin(e.lngLat));
   map.on("style.load", addOverlays);
   // Tap a camera dot to remove a camera that is not really there.
-  map.on("click", "cams", (e) => {
+  for (const id of ["cams", "cam-icons"]) map.on("click", id, (e) => {
     const [lon, lat] = e.features[0].geometry.coordinates;
     const cam = state.cameras.find((c) => Math.abs(c.lat - lat) < 1e-6 && Math.abs(c.lon - lon) < 1e-6);
     if (cam && confirm("Hide this camera? Use this when no camera is really there. Undo in Menu.")) hideCamera(cam);
@@ -177,6 +236,8 @@ async function initMap() {
     state.cameras.push(...store.get("navlab.mycams", []).map((c) => ({ lat: c.lat, lon: c.lon, limit: null, mine: true })));
     map.getSource("cams")?.setData(camGeo());
     document.body.dataset.ready = "1";
+    // Reloaded within half a day of being used: skip the Start button.
+    if (resumeFrom?.started && Date.now() - resumeFrom.t < 12 * 3600e3 && (!SIM || params.has("resume"))) start(true);
   });
   const el = document.createElement("div");
   el.className = "me";
@@ -203,7 +264,7 @@ function setTheme(id) {
   if (map) loadStyle().then((style) => map.setStyle(style, { diff: false })).catch((e) => say(`Theme failed to load. ${e.message}`));
 }
 
-const camGeo = () => ({ type: "FeatureCollection", features: state.cameras.map((c) => ({ type: "Feature", geometry: { type: "Point", coordinates: [c.lon, c.lat] }, properties: { mine: !!c.mine, limit: c.limit ?? null } })) });
+const camGeo = () => ({ type: "FeatureCollection", features: state.cameras.map((c) => ({ type: "Feature", geometry: { type: "Point", coordinates: [c.lon, c.lat] }, properties: { mine: !!c.mine, light: !!c.light, limit: c.limit ?? null } })) });
 
 // One tap while passing a camera the list does not know. Saved on the phone, used from the next pass on.
 function addCamera() {
@@ -248,17 +309,29 @@ function frame() {
   const hdg = lerpAngle(from.hdg, to.hdg, Math.min(1, k));
   glide.shown = { lat, lon, hdg };
   meMarker.setLngLat([lon, lat]).setRotation(hdg);
-  if (state.follow) {
+  if (state.follow && !state.pinch) {
     // While driving the map leans back (a view down the road, not a street plan) and the car sits in the lower part
     // of the screen so more of the road ahead shows. The lean eases in and out over about a second.
     const want = settings.tilt && state.drive ? TILT : 0;
     const now = map.getPitch();
     const pitch = Math.abs(want - now) < 0.4 ? want : now + (want - now) * 0.07;
-    map.jumpTo({ center: [lon, lat], bearing: state.kmh > 10 ? hdg : map.getBearing(), pitch,
+    // + and − set a zoom to move to; it is eased here because this per-frame jump would cut off any other animation
+    let zoom = map.getZoom();
+    if (state.zoomWant != null) { if (Math.abs(state.zoomWant - zoom) < 0.01) { zoom = state.zoomWant; state.zoomWant = null; } else zoom += (state.zoomWant - zoom) * 0.2; }
+    map.jumpTo({ center: [lon, lat], zoom, bearing: state.kmh > 10 ? hdg : map.getBearing(), pitch,
       padding: { top: Math.round(innerHeight * 0.3 * (pitch / TILT)), bottom: 0, left: 0, right: 0 } });
   }
 }
 const TILT = 52; // degrees
+
+// Zoom: pinch or the + / − buttons. The level chosen while the map follows the car is kept for the next drive.
+const driveZoom = () => Math.min(18, Math.max(11, store.get("navlab.zoom", 15.5)));
+function rememberZoom(z = map.getZoom()) { if (state.follow) store.set("navlab.zoom", +z.toFixed(2)); }
+function zoomBy(step) {
+  if (!map) return;
+  const z = Math.min(19, Math.max(5, (state.zoomWant ?? map.getZoom()) + step));
+  if (state.follow && state.pos) { state.zoomWant = z; rememberZoom(z); } else map.easeTo({ zoom: z, duration: 250 });
+}
 requestAnimationFrame(frame);
 
 // ---------- position ----------
@@ -286,7 +359,7 @@ function onFix(lat, lon, speedMs, hdg, t = Date.now()) {
     const loc = locateOnRoute(pos, state.route.pts, state.route.cum);
     if (loc.off < 30) { const q = pointAt(state.route.pts, state.route.cum, loc.along); show = { lat: q.lat, lon: q.lon, hdg: q.bearing }; }
   }
-  if (!prev) { meMarker.setLngLat([lon, lat]).addTo(map); gps("ok"); map.jumpTo({ center: [lon, lat], zoom: 15 }); suggestUsual(); tickLeave(); followSun(); }
+  if (!prev) { meMarker.setLngLat([lon, lat]).addTo(map); gps("ok"); map.jumpTo({ center: [lon, lat], zoom: driveZoom() }); suggestUsual(); tickLeave(); followSun(); resumeSession(); }
   glideTo(show);
   $("speed").textContent = Math.round(state.kmh);
   showLimit(pos, t);
@@ -370,6 +443,7 @@ function checkCameras(now) {
   chip.textContent = `${hit.camera.light ? "Red light cam" : "Camera"} ${fmtDist(hit.dist)}${limit ? ` · ${limit}` : ""}`;
   document.body.classList.toggle("over", over);
   const stage = state.alerts.check(hit, now);
+  if (!settings.camVoice) return; // the pill on screen is the warning; speech only when switched on in the Menu
   if (stage === "far") say(`${hit.camera.light ? "Red light camera" : "Speed camera"} ahead, ${sayDist(hit.dist)}.${limit ? ` Limit ${limit}.` : ""}`);
   if (stage === "near") say(over ? `${what}. Slow down, limit ${limit}.` : `${what}, ${sayDist(hit.dist)}.`);
 }
@@ -547,6 +621,7 @@ async function plan(dest) {
   $("usual").hidden = true;
   choose(0);
   $("plan").hidden = false;
+  saveSession({ mode: "plan", dest: spot3(dest), via: null, drive: null });
   state.follow = false;
   const b = new maplibregl.LngLatBounds();
   state.options.forEach((o) => o.pts.forEach((p) => b.extend([p.lon, p.lat])));
@@ -573,12 +648,15 @@ function choose(i) {
   $("plan-options").hidden = state.options.length < 2;
 }
 
-function go() {
-  const s = state.route.summary;
-  state.drive = { t0: Date.now(), name: state.route.dest.name, predicted: s.secs, noTraffic: s.noTraffic, metres: s.metres, leftM: s.metres, remainingS: s.secs,
+// `resumed` = a saved session: the drive carries on with its first prediction and start time instead of starting over.
+function go(resumed) {
+  const s = state.route.summary, old = resumed?.drive;
+  state.drive = { t0: old?.t0 ?? Date.now(), name: state.route.dest.name, predicted: old?.predicted ?? s.secs, noTraffic: old?.noTraffic ?? s.noTraffic,
+    metres: old?.metres ?? s.metres, leftM: s.metres, remainingS: s.secs,
     eta: { secs: s.secs, left: s.metres }, // latest traffic-aware time for the road still to drive
-    spoken: new Set(), offCount: 0, lastReroute: 0, lastRefresh: Date.now(), refreshing: false, reroutes: 0, switches: 0, via: null, viaPending: false, stops: 0 };
-  addRecent(state.route.dest);
+    spoken: new Set(), offCount: 0, lastReroute: 0, lastRefresh: Date.now(), refreshing: false, reroutes: old?.reroutes ?? 0, switches: old?.switches ?? 0,
+    via: resumed?.via || null, viaPending: !!resumed?.via, stops: old?.stops ?? 0 };
+  if (!resumed) addRecent(state.route.dest);
   state.options = null;
   drawRoute(state.route);
   $("plan").hidden = true;
@@ -587,9 +665,10 @@ function go() {
   state.follow = true;
   $("recenter").hidden = true;
   map.setPadding(navPadding());
-  map.setZoom(Math.max(map.getZoom(), 15.5));
-  say(`Route to ${state.route.dest.name}. ${Math.round(s.secs / 60)} minutes, arriving ${arriveAt(s.secs)}.`);
+  map.setZoom(driveZoom());
+  say(resumed ? `Route resumed. Arriving ${arriveAt(s.secs)}.` : `Route to ${state.route.dest.name}. ${Math.round(s.secs / 60)} minutes, arriving ${arriveAt(s.secs)}.`);
   loadIncidents(state.route, 0);
+  saveSession();
 }
 
 // While driving the car sits clear of the instruction bar: lower on the screen upright, to the right when the phone is sideways.
@@ -618,6 +697,7 @@ function endDrive(arrived) {
   state.drive = null;
   state.route = null;
   state.options = null;
+  saveSession({ mode: null, dest: null, via: null, drive: null });
   map.setPadding({ top: 0, bottom: 0, left: 0, right: 0 });
   drawRoute(null);
   for (const id of ["nav", "lanes", "plan", "stops"]) $(id).hidden = true;
@@ -633,6 +713,7 @@ function adopt(route, drive) {
   drive.lastRefresh = Date.now();
   drawRoute(route);
   loadIncidents(route, 0);
+  saveSession();
 }
 
 // Every couple of minutes: ask TomTom how long the road ahead takes now, and whether another road is 2+ minutes quicker.
@@ -882,12 +963,45 @@ function showDrives() {
   $("drives").hidden = false;
 }
 
+const started = () => !$("start"); // the Start button removes itself when pressed
+
+// ---------- session: a reload must not lose the trip ----------
+// iPhone throws the page away when Drive sits behind another app for a while, and reloads it on return. So the trip
+// is written down as it changes, and a reload picks it up: no Start button, same destination, same drive record.
+const SESSION = "navlab.session";
+const resumeFrom = store.get(SESSION, null); // as the last page left it, read before this page writes anything
+const spot3 = (p) => (p ? { name: p.name, lat: p.lat, lon: p.lon, ...(p.saved ? { saved: true } : {}), ...(p.parking ? { parking: true } : {}) } : null);
+function saveSession(patch) {
+  const d = state.drive, r = state.route;
+  const now = d && r ? { mode: "drive", dest: spot3(r.dest), via: d.viaPending ? spot3(d.via) : null,
+    drive: { t0: d.t0, predicted: d.predicted, noTraffic: d.noTraffic, metres: d.metres, reroutes: d.reroutes, switches: d.switches, stops: d.stops } } : {};
+  store.set(SESSION, { ...store.get(SESSION, {}), ...now, ...patch, t: Date.now() });
+}
+// "t" is the last moment the page was alive and in front, so its age = how long Drive was away.
+setInterval(() => { if (document.visibilityState === "visible" && started()) saveSession(); }, 15000);
+addEventListener("pagehide", () => { if (started()) saveSession(); });
+let resumed = false;
+async function resumeSession() {
+  const s = resumeFrom;
+  if (resumed || SIM && !params.has("resume") || !s?.dest || !s.mode) return;
+  resumed = true;
+  const away = Date.now() - s.t;
+  if (s.mode === "drive" && away < 3 * 3600e3 && distance(state.pos, s.dest) > 150) {
+    try {
+      const [route] = await fetchRoutes(state.pos, s.dest, { via: s.via });
+      state.route = route;
+      go(s);
+    } catch { plan(s.dest); }
+  } else if (s.mode === "plan" && away < 45 * 60e3) plan(s.dest);
+  else saveSession({ mode: null, dest: null, via: null, drive: null });
+}
+
 // ---------- start ----------
 let wakeLock;
 async function keepAwake() {
   try { wakeLock = await navigator.wakeLock?.request("screen"); } catch { /* not supported or denied: screen may dim */ }
 }
-document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible" && !$("start").isConnected) keepAwake(); });
+document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible" && started()) keepAwake(); });
 
 // GPS status line under the search box: waiting, blocked (with the fix), or hidden once a real fix arrives.
 function gps(status) {
@@ -936,14 +1050,20 @@ function boot() {
 // accepts the bare key or the whole setup link
 $("save-key").onclick = () => { const raw = $("key-input").value.trim(); const v = raw.includes("#key=") ? raw.split("#key=")[1] : raw; if (v) { KEY = v; store.set("navlab.key", v); boot(); } };
 if (!STANDALONE && !SIM) $("start-hint").textContent = "Safari: first Share → Add to Home Screen, then open Drive from the home screen";
-$("start").onclick = () => {
+function start(auto) {
+  if (started()) return;
   $("start").remove();
   try { audio = new (window.AudioContext || window.webkitAudioContext)(); audio.resume(); } catch { /* no sound system: chimes stay silent */ }
-  say("Ready.");
+  // After a reload nobody tapped anything, and the phone may hold sound back until a tap: wake it on the first touch.
+  if (auto) addEventListener("pointerdown", () => audio?.resume(), { once: true }); else say("Ready.");
+  saveSession({ started: true });
   keepAwake();
   startTracking();
-};
-$("recenter").onclick = () => { state.follow = true; $("recenter").hidden = true; if (state.pos) map.easeTo({ center: [state.pos.lon, state.pos.lat], zoom: 15.5 }); };
+}
+$("start").onclick = () => start(false);
+$("recenter").onclick = () => { state.follow = true; $("recenter").hidden = true; state.zoomWant = driveZoom(); };
+$("zoom-in").onclick = () => zoomBy(0.75);
+$("zoom-out").onclick = () => zoomBy(-0.75);
 $("theme").onclick = () => setTheme(THEMES[(THEMES.indexOf(theme()) + 1) % THEMES.length].id);
 $("addcam").onclick = addCamera;
 function setVoice(on) {
@@ -961,21 +1081,27 @@ function renderMenu() {
   $("avoid-tolls").textContent = `Avoid tolls: ${settings.avoidTolls ? "on" : "off"}`;
   $("avoid-motorways").textContent = `Avoid motorways: ${settings.avoidMotorways ? "on" : "off"}`;
   $("tilt").textContent = `3D driving view: ${settings.tilt ? "on" : "off"}`;
+  $("cam-voice").textContent = `Camera voice: ${settings.camVoice ? "on" : "off"}`;
   $("restore-cams").textContent = `Restore hidden cameras (${store.get("navlab.hiddencams", []).length})`;
-  for (const [id, on] of [["beep", settings.beep], ["avoid-tolls", settings.avoidTolls], ["avoid-motorways", settings.avoidMotorways], ["tilt", settings.tilt]]) $(id).classList.toggle("on", on);
+  for (const [id, on] of [["beep", settings.beep], ["avoid-tolls", settings.avoidTolls], ["avoid-motorways", settings.avoidMotorways], ["tilt", settings.tilt], ["cam-voice", settings.camVoice]]) $(id).classList.toggle("on", on);
 }
 function flip(key) {
   settings[key] = !settings[key];
   store.set("navlab.settings", settings);
   renderMenu();
   if (key === "beep" && settings.beep) chime();
+  if (key === "camVoice") tellShell();
 }
+// The iPhone shell speaks camera warnings while the phone is locked; it follows the same switch.
+function tellShell() { try { window.webkit?.messageHandlers?.drive?.postMessage({ camVoice: settings.camVoice }); } catch { /* plain browser */ } }
+tellShell();
 $("more").onclick = () => { renderMenu(); $("menu").hidden = false; };
 $("menu-close").onclick = () => ($("menu").hidden = true);
 $("beep").onclick = () => flip("beep");
 $("avoid-tolls").onclick = () => flip("avoidTolls");
 $("avoid-motorways").onclick = () => flip("avoidMotorways");
 $("tilt").onclick = () => flip("tilt");
+$("cam-voice").onclick = () => flip("camVoice");
 $("reset-quick").onclick = () => { localStorage.removeItem("navlab.home"); localStorage.removeItem("navlab.work"); renderQuick(); say("Home and Work cleared."); };
 $("home").onclick = () => quick("home");
 $("work").onclick = () => quick("work");
@@ -1005,7 +1131,7 @@ $("restore-cams").onclick = () => { localStorage.removeItem("navlab.hiddencams")
 $("stops-close").onclick = () => ($("stops").hidden = true);
 $("stops-remove").onclick = () => setStop(null);
 renderQuick();
-$("go").onclick = go;
+$("go").onclick = () => go();
 $("cancel").onclick = () => endDrive(false);
 $("stop").onclick = () => endDrive(false);
 $("log").onclick = () => { $("menu").hidden = true; showDrives(); };

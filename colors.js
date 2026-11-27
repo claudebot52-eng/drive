@@ -139,3 +139,37 @@ export function sunsetDayStyle(style, baseSource = "vectorTiles") {
     return { ...c, h: 34, s: 62, l: 92 };                                                                    // all ground: one cream
   }, "hsla(34, 100%, 97%, 0.9)");
 }
+
+const MAIN_ROADS = ["motorway", "trunk", "primary", "secondary", "tertiary"];
+/**
+ * Fewer things on the screen, for every drawn theme. Colours are not touched.
+ *  - traffic: free-flowing (green) lines go, so a colour on a road always means "slow here"; slow lines only on
+ *    main roads; no outlines or hatch patterns; of the incident layers only closed roads and the bigger jam signs stay
+ *  - buildings go; side-street names wait until the map is zoomed right in; sector names show on the overview only
+ *  - car-park aisles go, service roads and side streets appear later
+ */
+export function calmStyle(style, baseSource = "vectorTiles") {
+  for (const layer of style.layers) {
+    const id = layer.id;
+    const hide = () => { layer.layout = { ...layer.layout, visibility: "none" }; };
+    if (layer.source !== baseSource) {
+      if (id.startsWith("Traffic - ")) {
+        if (/Free flow|outline$|pattern$/.test(id)) hide();
+        else if (/Slow flow$/.test(id) && layer.filter) layer.filter = ["all", layer.filter, ["match", ["get", "road_category"], MAIN_ROADS, true, false]];
+      } else if (id.startsWith("TrafficIncidents - ")) {
+        if (/No delay|Minor jam/.test(id) || !(/marker$/.test(id) || id === "TrafficIncidents - Closed road")) hide();
+      }
+      continue;
+    }
+    if (id === "Buildings - Fill" || id === "3D - Building") hide();
+    else if (id === "Places - Neighbourhood" || id === "Places - Village / Hamlet") layer.maxzoom = 12.5;   // sector names ("E19-1", "Al Wahdah 16")
+    else if (id === "TransitLabels - Road" && layer.filter) {
+      layer.filter = ["all", layer.filter, ["any", ["match", ["get", "category"], MAIN_ROADS, true, false], ["all", [">=", ["zoom"], 15.5], ["==", ["get", "category"], "street"]]]];
+      layer.layout = { ...layer.layout, "symbol-spacing": 520 };
+    } else if (/^Surface - Minor road( outline)?$/.test(id)) {
+      layer.minzoom = 15;
+      if (layer.filter) layer.filter = ["all", layer.filter, ["!=", ["get", "subcategory"], "parking"]];
+    } else if (/^Surface - Street( outline)?$/.test(id)) layer.minzoom = Math.max(layer.minzoom || 0, 13);
+  }
+  return style;
+}

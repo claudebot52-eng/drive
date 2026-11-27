@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { parseColor, toCss, mapColors, sunsetStyle, sunsetDayStyle, smoothStyle, scaleWidth } from "../colors.js";
+import { parseColor, toCss, mapColors, sunsetStyle, sunsetDayStyle, smoothStyle, scaleWidth, calmStyle } from "../colors.js";
 
 const near = (a, b, tol = 1) => Math.abs(a - b) <= tol;
 
@@ -88,4 +88,34 @@ test("smoothStyle without flat: hides clutter only, keeps road edges and widths"
   assert.deepEqual(out.map((l) => l.layout?.visibility ?? "shown"), ["none", "none", "shown", "shown", "shown"]);
   assert.equal(out[2].paint["line-width"], 2);
   assert.deepEqual(scaleWidth({ stops: [[0, 1], [16, 2]] }, 2), { stops: [[0, 2], [16, 4]] });
+});
+
+test("calmStyle: green traffic, buildings and car-park aisles go; side-street names wait; colours untouched", () => {
+  const L = (id, extra = {}) => ({ id, type: "line", source: "vectorTiles", paint: { "line-color": "#123456" }, ...extra });
+  const T = (id, extra = {}) => ({ id, type: "line", source: "vectorTilesFlow", filter: ["<", ["get", "traffic_level"], 0.75], paint: { "line-color": "#00ff00" }, ...extra });
+  const I = (id, type = "line") => ({ id, type, source: "vectorTilesIncidents" });
+  const style = calmStyle({ layers: [
+    L("Surface - Primary road"), L("Surface - Minor road", { minzoom: 12, filter: ["==", ["get", "category"], "minor"] }), L("Surface - Street", { minzoom: 12 }),
+    { id: "Buildings - Fill", type: "fill", source: "vectorTiles" }, { id: "3D - Building", type: "fill-extrusion", source: "vectorTiles" },
+    { id: "Places - Neighbourhood", type: "symbol", source: "vectorTiles", maxzoom: 17 },
+    { id: "TransitLabels - Road", type: "symbol", source: "vectorTiles", filter: [">=", ["zoom"], 10], layout: { "symbol-spacing": 256 } },
+    T("Traffic - Free flow"), T("Traffic - Free flow outline"), T("Traffic - Slow flow"), T("Traffic - Slow flow pattern"), T("Traffic - Stationary flow"),
+    I("TrafficIncidents - No delay marker", "symbol"), I("TrafficIncidents - Minor jam "), I("TrafficIncidents - Major jam"), I("TrafficIncidents - Major jam marker", "symbol"),
+    I("TrafficIncidents - Closed road"), I("TrafficIncidents - Closed road pattern"),
+  ] });
+  const by = Object.fromEntries(style.layers.map((l) => [l.id, l]));
+  const hidden = (id) => by[id].layout?.visibility === "none";
+  for (const id of ["Buildings - Fill", "3D - Building", "Traffic - Free flow", "Traffic - Free flow outline", "Traffic - Slow flow pattern",
+    "TrafficIncidents - No delay marker", "TrafficIncidents - Minor jam ", "TrafficIncidents - Major jam", "TrafficIncidents - Closed road pattern"]) assert.ok(hidden(id), id);
+  for (const id of ["Surface - Primary road", "Traffic - Slow flow", "Traffic - Stationary flow", "TrafficIncidents - Major jam marker", "TrafficIncidents - Closed road"]) assert.ok(!hidden(id), id);
+  assert.equal(by["Surface - Primary road"].paint["line-color"], "#123456");
+  assert.equal(by["Traffic - Stationary flow"].paint["line-color"], "#00ff00");
+  assert.equal(by["Surface - Minor road"].minzoom, 15);
+  assert.deepEqual(by["Surface - Minor road"].filter[2], ["!=", ["get", "subcategory"], "parking"]);
+  assert.equal(by["Surface - Street"].minzoom, 13);
+  assert.equal(by["Places - Neighbourhood"].maxzoom, 12.5);
+  assert.equal(by["TransitLabels - Road"].layout["symbol-spacing"], 520);
+  assert.deepEqual(by["TransitLabels - Road"].filter[1], [">=", ["zoom"], 10]);                       // the map's own rule is kept
+  assert.equal(by["Traffic - Slow flow"].filter[0], "all");                                            // slow lines: main roads only
+  assert.deepEqual(by["Traffic - Stationary flow"].filter, ["<", ["get", "traffic_level"], 0.75]);     // a standstill shows on any road
 });

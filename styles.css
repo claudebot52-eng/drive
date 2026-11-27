@@ -56,6 +56,9 @@ body.over .speedo small { color: #fff !important; }
 
 .gps { margin-top: 8px; background: var(--panel); border-radius: 14px; padding: 10px 14px; color: var(--dim); font-size: 15px; }
 .gps.bad { background: var(--danger); color: #fff; font-weight: 600; }
+.side .zoom { display: flex; flex-direction: column; border-radius: var(--r); overflow: hidden; }
+.side .zoom button { width: 52px; min-height: 48px; padding: 0; font-size: 26px; font-weight: 600; line-height: 1; border-radius: 0; }
+.side .zoom button + button { border-top: 1px solid var(--line); }
 .side button.off { color: var(--dim); text-decoration: line-through; }
 .side .addcam { background: var(--warn); color: #201200; font-weight: 800; min-height: 60px; padding: 14px 18px; font-size: 19px; }
 .results button { position: relative; padding-right: 54px; }
