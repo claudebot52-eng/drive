@@ -8,7 +8,7 @@ const store = {
   get: (k, d) => { try { return JSON.parse(localStorage.getItem(k)) ?? d; } catch { return d; } },
   set: (k, v) => localStorage.setItem(k, JSON.stringify(v)),
 };
-const BUILD = "202611280203"; // stamped by deploy.sh
+const BUILD = "202611282012"; // stamped by deploy.sh
 const params = new URLSearchParams(location.search);
 const SIM = params.has("sim");
 const SIM_KMH = Number(params.get("kmh")) || 110;
@@ -332,8 +332,9 @@ function frame() {
 }
 const TILT = 52; // degrees
 
-// Zoom while following: the + / − buttons. A pinch looks around instead (the map stops following); Recenter keeps the
-// pinched zoom if it is a sensible driving zoom. The level is kept for the next drive.
+// Zoom while following: the + / − buttons, kept for the next drive. A pinch looks around instead (the map stops
+// following) and Recenter throws its zoom away.
+if (!store.get("navlab.zoomReset", false)) { store.set("navlab.zoomReset", true); localStorage.removeItem("navlab.zoom"); } // one time: earlier builds stored pinched zooms as the driving zoom
 const driveZoom = () => Math.min(18, Math.max(11, store.get("navlab.zoom", 15.5)));
 function setFollow(on) { state.follow = on; $("recenter").hidden = on; }
 function rememberZoom(z = map.getZoom()) { if (state.follow) store.set("navlab.zoom", +z.toFixed(2)); }
@@ -1073,10 +1074,12 @@ function start(auto) {
 }
 $("start").onclick = () => start(false);
 if (!SIM || params.has("resume")) $("start").style.display = "none"; // never shown outside test runs; removed once the map is up
+// Recenter = everything back to the driving view: on the car, the driving zoom (the one set with + / −), facing the way
+// the car faces. A pinch while looking around is never kept.
 $("recenter").onclick = () => {
-  const z = map.getZoom();
   setFollow(true);
-  if (z >= 11 && z <= 18) rememberZoom(z); else state.zoomWant = driveZoom(); // far out or right in = was only looking around
+  state.zoomWant = driveZoom();
+  if (glide.shown) map.setBearing(glide.shown.hdg);
 };
 $("zoom-in").onclick = () => zoomBy(0.75);
 $("zoom-out").onclick = () => zoomBy(-0.75);
